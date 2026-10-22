@@ -1,7 +1,15 @@
 #!/usr/bin/env bash
 set -e
 
-TERMINATOR="./terminator"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+if [ -x "$SCRIPT_DIR/../terminator" ]; then
+    TERMINATOR="$SCRIPT_DIR/../terminator"
+elif [ -x "./terminator" ]; then
+    TERMINATOR="./terminator"
+else
+    TERMINATOR="terminator"
+fi
+
 PASS=0
 FAIL=0
 
@@ -56,17 +64,18 @@ out=$($TERMINATOR -c 'echo "Dir: $(basename $(pwd))"')
 assert_eq "Nested substitution \$(basename \$(pwd))" "$out" "Dir: $(basename $(pwd))"
 
 # 9. Pipeline inside command substitution
-out=$($TERMINATOR -c 'echo "Count: $(ls src | wc -l)"')
-exp_count=$(ls src | wc -l)
+SRC_DIR="$SCRIPT_DIR/../src"
+out=$($TERMINATOR -c "echo \"Count: \$(ls '$SRC_DIR' | wc -l)\"")
+exp_count=$(ls "$SRC_DIR" | wc -l)
 assert_eq "Pipeline inside command substitution \$(ls | wc -l)" "$out" "Count: $exp_count"
 
 # 10. Backticks command substitution
 out=$($TERMINATOR -c 'echo "Year: `date +%Y`"')
 assert_eq "Backtick command substitution \`date +%Y\`" "$out" "Year: $(date +%Y)"
 
-# 11. Globbing expansion (ls tests/*.sh)
-out=$($TERMINATOR -c 'ls tests/*.sh | sort')
-exp=$(ls tests/*.sh | sort)
+# 11. Globbing expansion (ls *.sh)
+out=$($TERMINATOR -c "ls '$SCRIPT_DIR'/*.sh | sort")
+exp=$(ls "$SCRIPT_DIR"/*.sh | sort)
 assert_eq "Globbing expansion *.sh" "$out" "$exp"
 
 # 12. Escaped characters inside double quotes

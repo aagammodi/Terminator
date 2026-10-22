@@ -1,7 +1,14 @@
 #!/usr/bin/env bash
 set -e
 
-TERMINATOR="./terminator"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+if [ -x "$SCRIPT_DIR/../terminator" ]; then
+    TERMINATOR="$SCRIPT_DIR/../terminator"
+elif [ -x "./terminator" ]; then
+    TERMINATOR="./terminator"
+else
+    TERMINATOR="terminator"
+fi
 PASS=0
 FAIL=0
 

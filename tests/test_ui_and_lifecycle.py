@@ -5,7 +5,25 @@ import select
 import sys
 import time
 
+def find_terminator():
+    script_dir = os.path.dirname(os.path.abspath(__file__))
+    candidates = [
+        os.path.join(script_dir, "..", "terminator"),
+        os.path.join(script_dir, "terminator"),
+        os.path.abspath("./terminator"),
+        os.path.abspath("../terminator"),
+    ]
+    for c in candidates:
+        if os.path.isfile(c) and os.access(c, os.X_OK):
+            return os.path.abspath(c)
+    return None
+
 def run_interactive_session():
+    terminator_bin = find_terminator()
+    if not terminator_bin:
+        sys.stderr.write("Error: 'terminator' executable not found. Please run 'make' first.\n")
+        return 1
+
     master, slave = pty.openpty()
     pid = os.fork()
 
@@ -17,7 +35,10 @@ def run_interactive_session():
         os.dup2(slave, 2)
         os.close(slave)
         os.environ["TERM"] = "xterm-256color"
-        os.execl("./terminator", "./terminator", "--test")
+        try:
+            os.execl(terminator_bin, terminator_bin, "--test")
+        except Exception as e:
+            sys.stderr.write(f"Failed to exec {terminator_bin}: {e}\n")
         os._exit(1)
 
     os.close(slave)

@@ -1,12 +1,20 @@
 #!/usr/bin/env bash
 set -e
 
-TERMINATOR="./terminator"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+if [ -x "$SCRIPT_DIR/../terminator" ]; then
+    TERMINATOR="$SCRIPT_DIR/../terminator"
+elif [ -x "./terminator" ]; then
+    TERMINATOR="./terminator"
+else
+    TERMINATOR="terminator"
+fi
+
 PASS=0
 FAIL=0
 
 cleanup() {
-    rm -f tests/pipe_*.tmp
+    rm -f "$SCRIPT_DIR"/pipe_*.tmp
 }
 trap cleanup EXIT
 cleanup
@@ -49,20 +57,20 @@ exp=$(printf 'C\nD')
 assert_eq "Five-command pipeline (5 stages)" "$out" "$exp"
 
 # 5. Pipeline with input redirection
-printf "banana\napple\ncherry\n" > tests/pipe_in.tmp
-out=$($TERMINATOR -c "sort < tests/pipe_in.tmp | tr 'a-z' 'A-Z'")
+printf "banana\napple\ncherry\n" > "$SCRIPT_DIR/pipe_in.tmp"
+out=$($TERMINATOR -c "sort < '$SCRIPT_DIR/pipe_in.tmp' | tr 'a-z' 'A-Z'")
 exp=$(printf 'APPLE\nBANANA\nCHERRY')
 assert_eq "Pipeline with input redirection (< in | cmd)" "$out" "$exp"
 
 # 6. Pipeline with output redirection
-$TERMINATOR -c "printf 'banana\napple\n' | sort > tests/pipe_out.tmp"
-out=$(cat tests/pipe_out.tmp)
+$TERMINATOR -c "printf 'banana\napple\n' | sort > '$SCRIPT_DIR/pipe_out.tmp'"
+out=$(cat "$SCRIPT_DIR/pipe_out.tmp")
 exp=$(printf 'apple\nbanana')
 assert_eq "Pipeline with output redirection (cmd | cmd > out)" "$out" "$exp"
 
 # 7. Pipeline with both input and output redirection
-$TERMINATOR -c "sort < tests/pipe_in.tmp | head -2 > tests/pipe_res.tmp"
-out=$(cat tests/pipe_res.tmp)
+$TERMINATOR -c "sort < '$SCRIPT_DIR/pipe_in.tmp' | head -2 > '$SCRIPT_DIR/pipe_res.tmp'"
+out=$(cat "$SCRIPT_DIR/pipe_res.tmp")
 exp=$(printf 'apple\nbanana')
 assert_eq "Pipeline with both input and output redirection (< in | cmd > out)" "$out" "$exp"
 

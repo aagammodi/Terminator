@@ -74,6 +74,11 @@ int pipeline_execute(Pipeline *pipeline, Tab *tab) {
 
         if (pid == 0) {
             /* Child process i */
+            if (tab->cwd[0] != '\0') {
+                if (chdir(tab->cwd) != 0) {
+                    /* Directory might have been removed, continue anyway */
+                }
+            }
 
             /* 1. STDIN setup */
             if (i > 0) {

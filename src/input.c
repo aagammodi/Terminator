@@ -2,11 +2,15 @@
 #include "terminal.h"
 #include "executor.h"
 #include "shell.h"
+#include "gui.h"
 #include "util.h"
+#include "ipc.h"
 #include <X11/Xutil.h>
 #include <X11/keysym.h>
 #include <ctype.h>
 #include <signal.h>
+#include <stdio.h>
+#include <string.h>
 
 void input_handle_key_event(XKeyEvent *event, Shell *shell, bool *needs_redraw) {
     if (!shell || !event) return;
@@ -68,7 +72,9 @@ void input_handle_key_event(XKeyEvent *event, Shell *shell, bool *needs_redraw) 
 
         if (ksym == XK_c || ksym == XK_C) {
             /* Ctrl+C: Cancel current line or interrupt active running child */
-            if (tab->running_pid > 0) {
+            if (tab->state == SHELL_STATE_RUNNING && tab->to_worker_pipe[1] >= 0) {
+                ipc_send_msg(tab->to_worker_pipe[1], IPC_MSG_INT, NULL, 0);
+            } else if (tab->running_pid > 0) {
                 kill(-tab->running_pid, SIGINT);
                 kill(tab->running_pid, SIGINT);
             } else {
@@ -138,7 +144,7 @@ void input_handle_key_event(XKeyEvent *event, Shell *shell, bool *needs_redraw) 
     switch (ksym) {
         case XK_Return:
         case XK_KP_Enter: {
-            /* If a foreground command is still running, ignore enter or buffer it */
+            /* If a foreground command is still running, ignore enter */
             if (tab->state == SHELL_STATE_RUNNING || tab->out_pipe_fd >= 0) {
                 return;
             }
@@ -154,7 +160,6 @@ void input_handle_key_event(XKeyEvent *event, Shell *shell, bool *needs_redraw) 
             size_t input_len = strlen(tab->input);
             bool trailing_backslash = false;
             if (input_len > 0 && tab->input[input_len - 1] == '\\') {
-                /* Count trailing backslashes to see if it is escaped */
                 size_t bs_count = 0;
                 while (input_len > bs_count && tab->input[input_len - 1 - bs_count] == '\\') {
                     bs_count++;
@@ -165,10 +170,8 @@ void input_handle_key_event(XKeyEvent *event, Shell *shell, bool *needs_redraw) 
             }
 
             if (tab->state == SHELL_STATE_CONTINUATION) {
-                /* Append to accumulated command */
                 size_t acc_len = strlen(tab->accumulated_cmd);
                 if (trailing_backslash) {
-                    /* Strip trailing backslash and append without newline */
                     tab->input[input_len - 1] = '\0';
                     snprintf(tab->accumulated_cmd + acc_len, sizeof(tab->accumulated_cmd) - acc_len, "%s", tab->input);
                 } else {
@@ -201,12 +204,14 @@ void input_handle_key_event(XKeyEvent *event, Shell *shell, bool *needs_redraw) 
                 safe_strncpy(exec_cmd, tab->accumulated_cmd, sizeof(exec_cmd));
                 tab->accumulated_cmd[0] = '\0';
 
-                executor_run_line(tab, exec_cmd);
-
-                /* If built-in completed synchronously, return to ready state immediately */
-                if (tab->out_pipe_fd < 0) {
-                    tab->state = SHELL_STATE_READY;
-                    terminal_show_prompt(tab);
+                if (tab->to_worker_pipe[1] >= 0) {
+                    ipc_send_msg(tab->to_worker_pipe[1], IPC_MSG_EXEC, exec_cmd, (uint32_t)strlen(exec_cmd));
+                } else {
+                    executor_run_line(tab, exec_cmd);
+                    if (tab->out_pipe_fd < 0) {
+                        tab->state = SHELL_STATE_READY;
+                        terminal_show_prompt(tab);
+                    }
                 }
             }
             break;
@@ -261,64 +266,130 @@ void input_handle_key_event(XKeyEvent *event, Shell *shell, bool *needs_redraw) 
     }
 }
 
-void input_handle_button_event(XButtonEvent *event, Shell *shell, int win_width, int win_height, bool *needs_redraw) {
-    if (!shell || !event) return;
-    Tab *tab = shell_get_active_tab(shell);
+void input_handle_button_press(XButtonEvent *event, GUI *gui) {
+    if (!gui || !event || !gui->shell) return;
+    Tab *tab = shell_get_active_tab(gui->shell);
     if (!tab) return;
 
-    (void)win_height;
+    /* Mouse Wheel */
+    if (event->button == Button4) {
+        terminal_scroll_up(tab, 3);
+        gui->needs_redraw = true;
+        return;
+    } else if (event->button == Button5) {
+        terminal_scroll_down(tab, 3);
+        gui->needs_redraw = true;
+        return;
+    }
 
-    /* Left Click on Tab Bar or Affordances */
-    if (event->button == Button1) {
-        int bar_h = 38;
-        int brand_y = 6;
-        int brand_h = bar_h - 12;
+    if (event->button != Button1) return;
 
-        if (event->y >= brand_y && event->y <= brand_y + brand_h) {
-            int brand_pad_x = 16;
-            int brand_w = 104; /* Matches logo badge width */
-            int tab_x = brand_pad_x + brand_w + 12;
-            int add_w = 28;
-            int add_margin = 8;
-            int right_margin = 16;
+    /* 1. Scrollbar interaction */
+    ScrollbarGeom geom;
+    if (gui_get_scrollbar_geom(gui, tab, &geom) && geom.max_scroll > 0) {
+        if (event->x >= geom.sb_x - 6 && event->x <= geom.sb_x + geom.sb_w + 6 &&
+            event->y >= geom.sb_y && event->y <= geom.sb_y + geom.sb_h) {
 
-            int max_tab_w = 180;
-            int avail_tab_space = win_width - tab_x - add_w - add_margin - right_margin;
-            int tab_w = (shell->num_tabs > 0) ? (avail_tab_space / shell->num_tabs) - 6 : max_tab_w;
-            if (tab_w > max_tab_w) tab_w = max_tab_w;
-            if (tab_w < 70) tab_w = 70;
-
-            for (int i = 0; i < shell->num_tabs; i++) {
-                int cur_x = tab_x + i * (tab_w + 6);
-                if (event->x >= cur_x && event->x <= cur_x + tab_w) {
-                    if (event->x >= cur_x + tab_w - 20) {
-                        /* Clicked 'x' close button */
-                        shell_close_tab(shell, i);
-                    } else {
-                        shell_switch_tab(shell, i);
-                    }
-                    *needs_redraw = true;
-                    return;
-                }
-            }
-
-            int add_x = tab_x + shell->num_tabs * (tab_w + 6) + add_margin;
-            if (event->x >= add_x && event->x <= add_x + add_w) {
-                shell_open_tab(shell, NULL);
-                *needs_redraw = true;
+            if (event->y >= geom.thumb_y && event->y <= geom.thumb_y + geom.thumb_h) {
+                /* Clicked thumb: begin drag */
+                gui->sb_dragging = true;
+                gui->sb_drag_mouse_y = event->y;
+                gui->sb_thumb_grab_y = event->y - geom.thumb_y;
+                gui->sb_drag_start_offset = tab->scroll_offset;
+                gui->needs_redraw = true;
+                return;
+            } else if (event->y < geom.thumb_y) {
+                /* Clicked above thumb: page up */
+                int step = (geom.visible_rows > 1) ? geom.visible_rows - 1 : 1;
+                terminal_scroll_up(tab, step);
+                gui->needs_redraw = true;
+                return;
+            } else if (event->y > geom.thumb_y + geom.thumb_h) {
+                /* Clicked below thumb: page down */
+                int step = (geom.visible_rows > 1) ? geom.visible_rows - 1 : 1;
+                terminal_scroll_down(tab, step);
+                gui->needs_redraw = true;
                 return;
             }
         }
     }
 
-    /* Mouse Wheel */
-    if (event->button == Button4) {
-        /* Wheel Up */
-        terminal_scroll_up(tab, 3);
-        *needs_redraw = true;
-    } else if (event->button == Button5) {
-        /* Wheel Down */
-        terminal_scroll_down(tab, 3);
-        *needs_redraw = true;
+    /* 2. Top tab bar interaction */
+    int bar_h = gui->theme.top_bar_height;
+    int brand_y = 6;
+    int brand_h = bar_h - 12;
+
+    if (event->y >= brand_y && event->y <= brand_y + brand_h) {
+        int title_len = (int)strlen("TERMINATOR");
+        int title_text_w = title_len * gui->theme.font_width;
+        int brand_pad_x = 16;
+        int brand_w = title_text_w + 24;
+        int tab_x = brand_pad_x + brand_w + 12;
+        int add_w = 28;
+        int add_margin = 8;
+        int right_margin = 16;
+
+        int max_tab_w = 180;
+        int avail_tab_space = gui->width - tab_x - add_w - add_margin - right_margin;
+        int tab_w = (gui->shell->num_tabs > 0) ? (avail_tab_space / gui->shell->num_tabs) - 6 : max_tab_w;
+        if (tab_w > max_tab_w) tab_w = max_tab_w;
+        if (tab_w < 70) tab_w = 70;
+
+        for (int i = 0; i < gui->shell->num_tabs; i++) {
+            int cur_x = tab_x + i * (tab_w + 6);
+            if (event->x >= cur_x && event->x <= cur_x + tab_w) {
+                if (event->x >= cur_x + tab_w - 20) {
+                    /* Clicked 'x' close button */
+                    shell_close_tab(gui->shell, i);
+                } else {
+                    shell_switch_tab(gui->shell, i);
+                }
+                gui->needs_redraw = true;
+                return;
+            }
+        }
+
+        int add_x = tab_x + gui->shell->num_tabs * (tab_w + 6) + add_margin;
+        if (event->x >= add_x && event->x <= add_x + add_w) {
+            shell_open_tab(gui->shell, NULL);
+            gui->needs_redraw = true;
+            return;
+        }
+    }
+}
+
+void input_handle_button_release(XButtonEvent *event, GUI *gui) {
+    if (!gui || !event) return;
+    if (event->button == Button1) {
+        if (gui->sb_dragging) {
+            gui->sb_dragging = false;
+            gui->needs_redraw = true;
+        }
+    }
+}
+
+void input_handle_motion(XMotionEvent *event, GUI *gui) {
+    if (!gui || !event || !gui->shell || !gui->sb_dragging) return;
+    Tab *tab = shell_get_active_tab(gui->shell);
+    if (!tab) return;
+
+    ScrollbarGeom geom;
+    if (!gui_get_scrollbar_geom(gui, tab, &geom) || geom.max_scroll <= 0) return;
+
+    int travel = geom.sb_h - geom.thumb_h;
+    if (travel <= 0) return;
+
+    int thumb_y = event->y - gui->sb_thumb_grab_y;
+    if (thumb_y < geom.sb_y) thumb_y = geom.sb_y;
+    if (thumb_y > geom.sb_y + travel) thumb_y = geom.sb_y + travel;
+
+    float fraction = (float)(thumb_y - geom.sb_y) / (float)travel;
+    int new_offset = (int)((1.0f - fraction) * geom.max_scroll + 0.5f);
+    if (new_offset < 0) new_offset = 0;
+    if (new_offset > geom.max_scroll) new_offset = geom.max_scroll;
+
+    if (new_offset != tab->scroll_offset) {
+        tab->scroll_offset = new_offset;
+        gui->needs_redraw = true;
     }
 }

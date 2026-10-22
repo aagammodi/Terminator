@@ -27,9 +27,10 @@ static ThemeColorIndex ansi_to_theme_color(int code, bool bright) {
     }
 }
 
-Tab *terminal_tab_create(int id, const char *initial_dir) {
+Tab *terminal_tab_create(int id, const char *initial_dir, Shell *shell) {
     Tab *tab = xcalloc(1, sizeof(Tab));
     tab->id = id;
+    tab->shell = shell;
 
     if (initial_dir && initial_dir[0] != '\0') {
         path_expand_tilde(initial_dir, tab->cwd, sizeof(tab->cwd));
@@ -44,7 +45,6 @@ Tab *terminal_tab_create(int id, const char *initial_dir) {
     tab->cursor = 0;
     tab->accumulated_cmd[0] = '\0';
     tab->in_continuation = false;
-    tab->shell = NULL;
     tab->request_close = false;
 
     tab->line_capacity = INITIAL_LINE_CAPACITY;
@@ -62,9 +62,15 @@ Tab *terminal_tab_create(int id, const char *initial_dir) {
     tab->num_pipeline_pids = 0;
     tab->last_exit_status = 0;
 
-    tab->history_capacity = 64;
-    tab->history_count = 0;
-    tab->history = xcalloc(tab->history_capacity, sizeof(char *));
+    tab->worker_thread = 0;
+    tab->thread_created = false;
+    tab->child_pid = -1;
+    tab->to_worker_pipe[0] = -1;
+    tab->to_worker_pipe[1] = -1;
+    tab->from_worker_pipe[0] = -1;
+    tab->from_worker_pipe[1] = -1;
+    tab->worker_running = false;
+
     tab->history_index = -1;
     tab->saved_draft[0] = '\0';
     tab->echo_to_stdout = false;
@@ -84,16 +90,28 @@ void terminal_tab_destroy(Tab *tab) {
         tab->out_pipe_fd = -1;
     }
 
+    if (tab->to_worker_pipe[0] >= 0) {
+        close(tab->to_worker_pipe[0]);
+        tab->to_worker_pipe[0] = -1;
+    }
+    if (tab->to_worker_pipe[1] >= 0) {
+        close(tab->to_worker_pipe[1]);
+        tab->to_worker_pipe[1] = -1;
+    }
+    if (tab->from_worker_pipe[0] >= 0) {
+        close(tab->from_worker_pipe[0]);
+        tab->from_worker_pipe[0] = -1;
+    }
+    if (tab->from_worker_pipe[1] >= 0) {
+        close(tab->from_worker_pipe[1]);
+        tab->from_worker_pipe[1] = -1;
+    }
+
     for (int i = 0; i < tab->num_lines; i++) {
         free(tab->lines[i].text);
         free(tab->lines[i].colors);
     }
     free(tab->lines);
-
-    for (int i = 0; i < tab->history_count; i++) {
-        free(tab->history[i]);
-    }
-    free(tab->history);
 
     free(tab);
 }
@@ -200,49 +218,51 @@ void terminal_delete_word_backward(Tab *tab) {
 void terminal_history_add(Tab *tab, const char *cmd) {
     if (!tab || !cmd || cmd[0] == '\0') return;
 
-    /* Don't duplicate immediate previous entry */
-    if (tab->history_count > 0 && strcmp(tab->history[tab->history_count - 1], cmd) == 0) {
-        tab->history_index = -1;
-        return;
+    if (tab->shell && tab->shell->history) {
+        history_add(tab->shell->history, cmd);
     }
-
-    if (tab->history_count >= tab->history_capacity) {
-        tab->history_capacity *= 2;
-        tab->history = xrealloc(tab->history, tab->history_capacity * sizeof(char *));
-    }
-
-    tab->history[tab->history_count++] = xstrdup(cmd);
     tab->history_index = -1;
 }
 
 void terminal_history_prev(Tab *tab) {
-    if (!tab || tab->history_count == 0) return;
+    if (!tab || !tab->shell || !tab->shell->history) return;
+    int count = history_get_count(tab->shell->history);
+    if (count == 0) return;
 
     if (tab->history_index == -1) {
         safe_strncpy(tab->saved_draft, tab->input, sizeof(tab->saved_draft));
-        tab->history_index = tab->history_count - 1;
+        tab->history_index = count - 1;
     } else if (tab->history_index > 0) {
         tab->history_index--;
     } else {
         return; /* Already at oldest command */
     }
 
-    safe_strncpy(tab->input, tab->history[tab->history_index], sizeof(tab->input));
-    tab->cursor = (int)strlen(tab->input);
+    char entry[MAX_INPUT_LEN];
+    if (history_get_entry(tab->shell->history, tab->history_index, entry, sizeof(entry))) {
+        safe_strncpy(tab->input, entry, sizeof(tab->input));
+        tab->cursor = (int)strlen(tab->input);
+    }
 }
 
 void terminal_history_next(Tab *tab) {
-    if (!tab || tab->history_index == -1) return;
+    if (!tab || !tab->shell || !tab->shell->history) return;
+    int count = history_get_count(tab->shell->history);
+    if (tab->history_index == -1) return;
 
-    if (tab->history_index < tab->history_count - 1) {
+    if (tab->history_index < count - 1) {
         tab->history_index++;
-        safe_strncpy(tab->input, tab->history[tab->history_index], sizeof(tab->input));
+        char entry[MAX_INPUT_LEN];
+        if (history_get_entry(tab->shell->history, tab->history_index, entry, sizeof(entry))) {
+            safe_strncpy(tab->input, entry, sizeof(tab->input));
+            tab->cursor = (int)strlen(tab->input);
+        }
     } else {
         /* Restored saved draft */
         tab->history_index = -1;
         safe_strncpy(tab->input, tab->saved_draft, sizeof(tab->input));
+        tab->cursor = (int)strlen(tab->input);
     }
-    tab->cursor = (int)strlen(tab->input);
 }
 
 void terminal_append_line_with_colors(Tab *tab, const char *text, const uint8_t *colors, int len, LineType type) {
@@ -463,5 +483,7 @@ void terminal_scroll_to_bottom(Tab *tab) {
 void terminal_show_prompt(Tab *tab) {
     if (!tab) return;
     terminal_flush_partial_line(tab, false);
-    terminal_scroll_to_bottom(tab);
+    if (tab->scroll_offset == 0) {
+        terminal_scroll_to_bottom(tab);
+    }
 }

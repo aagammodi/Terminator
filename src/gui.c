@@ -3,11 +3,13 @@
 #include "input.h"
 #include "executor.h"
 #include "util.h"
+#include "ipc.h"
 #include <X11/Xatom.h>
 #include <stdio.h>
 #include <string.h>
 #include <unistd.h>
 #include <poll.h>
+#include <sys/wait.h>
 
 static void draw_text(GUI *gui, int x, int y, const char *text, unsigned long color) {
     if (!gui || !text || text[0] == '\0') return;
@@ -33,6 +35,63 @@ static void draw_line(GUI *gui, int x1, int y1, int x2, int y2, unsigned long co
     XDrawLine(gui->dpy, gui->back_buffer, gui->gc, x1, y1, x2, y2);
 }
 
+bool gui_get_scrollbar_geom(const GUI *gui, const Tab *tab, ScrollbarGeom *geom) {
+    if (!gui || !tab || !geom) return false;
+
+    int bar_h = gui->theme.top_bar_height;
+    int stat_h = gui->theme.status_bar_height;
+    int term_top = bar_h + gui->theme.padding_y;
+    int term_bottom = gui->height - stat_h - gui->theme.padding_y;
+    int term_height = term_bottom - term_top;
+    if (term_height <= 0) return false;
+
+    int line_h = gui->theme.font_height + 6;
+    if (line_h < 14) line_h = 18;
+
+    int visible_rows = term_height / line_h;
+    if (visible_rows <= 0) visible_rows = 1;
+
+    int total_rows = tab->num_lines;
+    if (tab->state != SHELL_STATE_RUNNING) {
+        total_rows++;
+    }
+
+    int max_scroll = (total_rows > visible_rows) ? (total_rows - visible_rows) : 0;
+
+    int sb_w = 8;
+    int sb_x = gui->width - sb_w - 4;
+    int sb_y = term_top;
+    int sb_h = term_height;
+
+    int thumb_h = sb_h;
+    int thumb_y = sb_y;
+
+    if (max_scroll > 0 && total_rows > 0) {
+        thumb_h = (sb_h * visible_rows) / total_rows;
+        if (thumb_h < 24) thumb_h = 24;
+        if (thumb_h > sb_h) thumb_h = sb_h;
+
+        int travel = sb_h - thumb_h;
+        int clamped_offset = tab->scroll_offset;
+        if (clamped_offset < 0) clamped_offset = 0;
+        if (clamped_offset > max_scroll) clamped_offset = max_scroll;
+
+        thumb_y = sb_y + (int)(((float)(max_scroll - clamped_offset) / (float)max_scroll) * travel + 0.5f);
+    }
+
+    geom->sb_x = sb_x;
+    geom->sb_y = sb_y;
+    geom->sb_w = sb_w;
+    geom->sb_h = sb_h;
+    geom->thumb_y = thumb_y;
+    geom->thumb_h = thumb_h;
+    geom->max_scroll = max_scroll;
+    geom->visible_rows = visible_rows;
+    geom->total_rows = total_rows;
+
+    return true;
+}
+
 GUI *gui_create(Shell *shell, int width, int height) {
     Display *dpy = XOpenDisplay(NULL);
     if (!dpy) {
@@ -56,7 +115,7 @@ GUI *gui_create(Shell *shell, int width, int height) {
     /* Create Window */
     XSetWindowAttributes swa;
     swa.background_pixel = theme_color(&gui->theme, COLOR_BG);
-    swa.event_mask = ExposureMask | KeyPressMask | ButtonPressMask | StructureNotifyMask;
+    swa.event_mask = ExposureMask | KeyPressMask | ButtonPressMask | ButtonReleaseMask | Button1MotionMask | StructureNotifyMask;
 
     gui->win = XCreateWindow(
         dpy, root,
@@ -218,7 +277,7 @@ void gui_redraw(GUI *gui) {
     int stat_h = t->status_bar_height;
     int stat_y = h - stat_h;
     fill_rect(gui, 0, stat_y, w, stat_h, theme_color(t, COLOR_SURFACE_SEC));
-    draw_line(gui, 0, stat_y, w, stat_y, theme_color(t, COLOR_BORDER));
+    draw_line(gui, 0, stat_y, w, stat_h, theme_color(t, COLOR_BORDER));
 
     int stat_text_y = stat_y + (stat_h / 2) + (t->font_ascent / 2) - 1;
     int sx = 16;
@@ -253,7 +312,6 @@ void gui_redraw(GUI *gui) {
     int visible_rows = term_height / line_h;
     if (visible_rows <= 0) visible_rows = 1;
 
-    /* Total available rows includes history lines + current input row (if not running) */
     int total_rows = tab->num_lines;
     bool show_input_row = (tab->state != SHELL_STATE_RUNNING);
     if (show_input_row) {
@@ -267,11 +325,9 @@ void gui_redraw(GUI *gui) {
 
     for (int r = start_row; r < start_row + visible_rows && r < total_rows; r++) {
         if (r < tab->num_lines) {
-            /* Historical line */
             TerminalLine *tl = &tab->lines[r];
 
             if (tl->colors != NULL && tl->length > 0) {
-                /* Render spans with character-specific ANSI SGR colors */
                 int span_start = 0;
                 int span_x = t->padding_x;
                 while (span_start < tl->length) {
@@ -318,14 +374,12 @@ void gui_redraw(GUI *gui) {
                 draw_text(gui, t->padding_x, render_y, tl->text, theme_color(t, COLOR_FG_MAIN));
             }
         } else if (show_input_row) {
-            /* Active typed command line */
             int curr_x = t->padding_x;
 
             if (tab->state == SHELL_STATE_CONTINUATION) {
                 draw_text(gui, curr_x, render_y, "> ", theme_color(t, COLOR_WARM_ORANGE));
                 curr_x += 2 * t->font_width;
             } else {
-                /* Vivid Cyan / Purple prompt */
                 const char *user = getenv("USER");
                 if (!user || user[0] == '\0') user = "user";
                 draw_text(gui, curr_x, render_y, user, theme_color(t, COLOR_NEON_PINK));
@@ -340,12 +394,10 @@ void gui_redraw(GUI *gui) {
 
             draw_text(gui, curr_x, render_y, tab->input, theme_color(t, COLOR_FG_MAIN));
 
-            /* Draw Cursor */
             int cursor_x = curr_x + (tab->cursor * t->font_width);
             int cursor_y = render_y - t->font_ascent;
             fill_rect(gui, cursor_x, cursor_y, t->font_width, t->font_height, theme_color(t, COLOR_CURSOR));
 
-            /* Draw character under cursor */
             char under_char = tab->input[tab->cursor];
             if (under_char != '\0') {
                 char ch_str[2] = { under_char, '\0' };
@@ -355,15 +407,18 @@ void gui_redraw(GUI *gui) {
         render_y += line_h;
     }
 
-    /* 5. Scroll Indicator if scrolled */
-    if (tab->scroll_offset > 0) {
-        int bar_w = 6;
-        int bar_x = w - bar_w - 4;
-        fill_rect(gui, bar_x, term_top, bar_w, term_height, theme_color(t, COLOR_SURFACE_SEC));
-        int thumb_h = (term_height * visible_rows) / (tab->num_lines + 1);
-        if (thumb_h < 20) thumb_h = 20;
-        int thumb_y = term_bottom - thumb_h - (tab->scroll_offset * (term_height - thumb_h)) / (tab->num_lines + 1);
-        fill_rect(gui, bar_x, thumb_y, bar_w, thumb_h, theme_color(t, COLOR_PRIMARY_VIOLET));
+    /* 5. Scrollbar */
+    ScrollbarGeom sb;
+    if (gui_get_scrollbar_geom(gui, tab, &sb)) {
+        if (sb.max_scroll > 0) {
+            /* Draw Track */
+            fill_rect(gui, sb.sb_x, sb.sb_y, sb.sb_w, sb.sb_h, theme_color(t, COLOR_SURFACE_SEC));
+            draw_rect(gui, sb.sb_x, sb.sb_y, sb.sb_w, sb.sb_h, theme_color(t, COLOR_BORDER));
+
+            /* Draw Thumb */
+            unsigned long thumb_col = gui->sb_dragging ? theme_color(t, COLOR_ELECTRIC_CYAN) : theme_color(t, COLOR_PRIMARY_VIOLET);
+            fill_rect(gui, sb.sb_x, sb.thumb_y, sb.sb_w, sb.thumb_h, thumb_col);
+        }
     }
 
     /* 6. Copy back_buffer to window */
@@ -390,7 +445,15 @@ void gui_run_event_loop(GUI *gui) {
                     break;
 
                 case ButtonPress:
-                    input_handle_button_event(&ev.xbutton, gui->shell, gui->width, gui->height, &gui->needs_redraw);
+                    input_handle_button_press(&ev.xbutton, gui);
+                    break;
+
+                case ButtonRelease:
+                    input_handle_button_release(&ev.xbutton, gui);
+                    break;
+
+                case MotionNotify:
+                    input_handle_motion(&ev.xmotion, gui);
                     break;
 
                 case Expose:
@@ -429,7 +492,7 @@ void gui_run_event_loop(GUI *gui) {
             gui_redraw(gui);
         }
 
-        /* Check for active child pipes across all tabs and poll */
+        /* Check for active worker pipes across all tabs and poll */
         struct pollfd pfd[1 + MAX_TABS];
         int tab_map[1 + MAX_TABS];
         int nfds = 1;
@@ -438,59 +501,114 @@ void gui_run_event_loop(GUI *gui) {
 
         for (int i = 0; i < gui->shell->num_tabs; i++) {
             Tab *t = gui->shell->tabs[i];
-            if (t && t->out_pipe_fd >= 0) {
-                pfd[nfds].fd = t->out_pipe_fd;
+            if (t && t->from_worker_pipe[0] >= 0) {
+                pfd[nfds].fd = t->from_worker_pipe[0];
                 pfd[nfds].events = POLLIN | POLLHUP | POLLERR;
                 tab_map[nfds] = i;
                 nfds++;
             }
         }
 
-        int poll_timeout = 50; /* 50ms responsive timeout */
+        int poll_timeout = 20; /* 20ms timeout for responsive UI */
         int pret = poll(pfd, (nfds_t)nfds, poll_timeout);
 
         if (pret > 0 && nfds > 1) {
             for (int i = 1; i < nfds; i++) {
-                if (pfd[i].revents & (POLLIN | POLLHUP | POLLERR)) {
+                if (pfd[i].revents & POLLIN) {
                     int t_idx = tab_map[i];
                     Tab *t = gui->shell->tabs[t_idx];
-                    char read_buf[4096];
-                    ssize_t n = read(t->out_pipe_fd, read_buf, sizeof(read_buf));
-                    if (n > 0) {
-                        terminal_append_output_bytes(t, read_buf, (size_t)n, false);
-                        if (t_idx == gui->shell->active_tab_idx) {
-                            gui->needs_redraw = true;
+                    if (!t) continue;
+
+                    IPCHeader hdr;
+                    while (ipc_recv_header(t->from_worker_pipe[0], &hdr)) {
+                        if (hdr.type == IPC_MSG_OUTPUT) {
+                            char *buf = xmalloc(hdr.length + 1);
+                            if (hdr.length > 0) {
+                                if (!ipc_recv_payload(t->from_worker_pipe[0], buf, hdr.length)) {
+                                    free(buf);
+                                    break;
+                                }
+                            }
+                            buf[hdr.length] = '\0';
+                            terminal_append_output_bytes(t, buf, hdr.length, false);
+                            free(buf);
+                            if (t_idx == gui->shell->active_tab_idx) {
+                                gui->needs_redraw = true;
+                            }
+                        } else if (hdr.type == IPC_MSG_CWD) {
+                            char buf[MAX_PATH_LEN];
+                            uint32_t len = (hdr.length < sizeof(buf) - 1) ? hdr.length : (sizeof(buf) - 1);
+                            if (len > 0) {
+                                ipc_recv_payload(t->from_worker_pipe[0], buf, len);
+                            }
+                            buf[len] = '\0';
+                            safe_strncpy(t->cwd, buf, sizeof(t->cwd));
+                            if (t_idx == gui->shell->active_tab_idx) {
+                                gui->needs_redraw = true;
+                            }
+                        } else if (hdr.type == IPC_MSG_CLEAR) {
+                            terminal_clear_screen(t);
+                            if (t_idx == gui->shell->active_tab_idx) {
+                                gui->needs_redraw = true;
+                            }
+                        } else if (hdr.type == IPC_MSG_EXIT) {
+                            t->request_close = true;
+                        } else if (hdr.type == IPC_MSG_PROMPT) {
+                            int status = 0;
+                            if (hdr.length >= sizeof(int)) {
+                                ipc_recv_payload(t->from_worker_pipe[0], &status, sizeof(int));
+                            }
+                            t->last_exit_status = status;
+                            t->state = SHELL_STATE_READY;
+                            terminal_show_prompt(t);
+                            if (t_idx == gui->shell->active_tab_idx) {
+                                gui->needs_redraw = true;
+                            }
                         }
-                    } else if (n == 0 || (n < 0 && errno != EAGAIN && errno != EINTR)) {
-                        /* EOF reached: child finished */
-                        close(t->out_pipe_fd);
-                        t->out_pipe_fd = -1;
-                        executor_reap_children(t);
-                        t->state = SHELL_STATE_READY;
-                        terminal_show_prompt(t);
-                        if (t_idx == gui->shell->active_tab_idx) {
-                            gui->needs_redraw = true;
+
+                        /* Check if more messages ready without blocking */
+                        struct pollfd check_pfd;
+                        check_pfd.fd = t->from_worker_pipe[0];
+                        check_pfd.events = POLLIN;
+                        if (poll(&check_pfd, 1, 0) <= 0 || !(check_pfd.revents & POLLIN)) {
+                            break;
+                        }
+                    }
+                }
+
+                if (pfd[i].revents & (POLLHUP | POLLERR)) {
+                    int t_idx = tab_map[i];
+                    Tab *t = gui->shell->tabs[t_idx];
+                    if (t) {
+                        if (gui->shell->use_process_mode && t->child_pid > 0) {
+                            int st = 0;
+                            waitpid(t->child_pid, &st, WNOHANG);
+                            t->child_pid = -1;
+                        }
+                        close(t->from_worker_pipe[0]);
+                        t->from_worker_pipe[0] = -1;
+                        if (t->to_worker_pipe[1] >= 0) {
+                            close(t->to_worker_pipe[1]);
+                            t->to_worker_pipe[1] = -1;
+                        }
+                        t->worker_running = false;
+                        if (!t->request_close) {
+                            terminal_append_line(t, "[Tab disconnected]", LINE_TYPE_ERROR);
+                            t->state = SHELL_STATE_READY;
+                            terminal_show_prompt(t);
+                            if (t_idx == gui->shell->active_tab_idx) {
+                                gui->needs_redraw = true;
+                            }
                         }
                     }
                 }
             }
         }
 
-        /* Check child reaping and exit requests across all tabs */
+        /* Check tab close requests across all tabs */
         for (int i = 0; i < gui->shell->num_tabs; i++) {
             Tab *t = gui->shell->tabs[i];
-            if (!t) continue;
-
-            if (t->running_pid > 0 && t->out_pipe_fd < 0) {
-                executor_reap_children(t);
-                t->state = SHELL_STATE_READY;
-                terminal_show_prompt(t);
-                if (i == gui->shell->active_tab_idx) {
-                    gui->needs_redraw = true;
-                }
-            }
-
-            if (t->request_close) {
+            if (t && t->request_close) {
                 shell_close_tab(gui->shell, i);
                 gui->needs_redraw = true;
                 break;

@@ -75,10 +75,15 @@ typedef struct Tab {
     int num_pipeline_pids;
     int last_exit_status;
     
-    /* In-memory command history */
-    char **history;
-    int history_count;
-    int history_capacity;
+    /* Worker thread (Mode A) and child process (Mode B) lifecycle */
+    pthread_t worker_thread;
+    bool thread_created;
+    pid_t child_pid;
+    int to_worker_pipe[2];   /* GUI -> Worker */
+    int from_worker_pipe[2]; /* Worker -> GUI */
+    bool worker_running;
+    
+    /* History navigation index (queries Shell shared history) */
     int history_index; /* For Up/Down navigation (-1 = current new input) */
     char saved_draft[MAX_INPUT_LEN]; /* Saved draft when navigating history */
     
@@ -86,7 +91,7 @@ typedef struct Tab {
 } Tab;
 
 /* Terminal lifecycle */
-Tab *terminal_tab_create(int id, const char *initial_dir);
+Tab *terminal_tab_create(int id, const char *initial_dir, struct Shell *shell);
 void terminal_tab_destroy(Tab *tab);
 
 /* Input buffer operations */

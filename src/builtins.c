@@ -3,11 +3,13 @@
 #include "executor.h"
 #include "parser.h"
 #include "shell.h"
+#include "history.h"
 #include <stdio.h>
 #include <string.h>
 #include <errno.h>
 #include <ctype.h>
 #include <unistd.h>
+#include <sys/stat.h>
 
 bool builtin_is_builtin(const char *name) {
     if (!name) return false;
@@ -42,13 +44,32 @@ static int builtin_cd(const Command *cmd, Tab *tab) {
         path_expand_tilde(cmd->argv[1], target, sizeof(target));
     }
 
-    if (chdir(target) != 0) {
-        fprintf(stderr, "terminator: cd: %s: %s\n", target, strerror(errno));
+    /* Build path relative to tab->cwd if relative */
+    char abs_target[MAX_PATH_LEN * 2];
+    if (target[0] == '/') {
+        safe_strncpy(abs_target, target, sizeof(abs_target));
+    } else {
+        snprintf(abs_target, sizeof(abs_target), "%s/%s", tab->cwd, target);
+    }
+
+    struct stat st;
+    if (stat(abs_target, &st) != 0 || !S_ISDIR(st.st_mode)) {
+        fprintf(stderr, "terminator: cd: %s: %s\n", target, strerror(errno ? errno : ENOENT));
         return 1;
     }
 
-    if (!getcwd(tab->cwd, sizeof(tab->cwd))) {
-        safe_strncpy(tab->cwd, target, sizeof(tab->cwd));
+    char *resolved = realpath(abs_target, NULL);
+    if (resolved) {
+        safe_strncpy(tab->cwd, resolved, sizeof(tab->cwd));
+        free(resolved);
+    } else {
+        safe_strncpy(tab->cwd, abs_target, sizeof(tab->cwd));
+    }
+
+    if (tab->shell && tab->shell->use_process_mode) {
+        if (chdir(tab->cwd) != 0) {
+            /* Handled */
+        }
     }
 
     return 0;
@@ -56,12 +77,15 @@ static int builtin_cd(const Command *cmd, Tab *tab) {
 
 static int builtin_pwd(const Command *cmd, Tab *tab) {
     (void)cmd;
-    char cwd_buf[MAX_PATH_LEN];
-    if (getcwd(cwd_buf, sizeof(cwd_buf))) {
-        printf("%s\n", cwd_buf);
-        safe_strncpy(tab->cwd, cwd_buf, sizeof(tab->cwd));
-    } else {
+    if (tab && tab->cwd[0] != '\0') {
         printf("%s\n", tab->cwd);
+    } else {
+        char cwd_buf[MAX_PATH_LEN];
+        if (getcwd(cwd_buf, sizeof(cwd_buf))) {
+            printf("%s\n", cwd_buf);
+        } else {
+            printf("/\n");
+        }
     }
     fflush(stdout);
     return 0;
@@ -92,8 +116,8 @@ static int builtin_exit(const Command *cmd, Tab *tab) {
 
 static int builtin_history(const Command *cmd, Tab *tab) {
     (void)cmd;
-    for (int i = 0; i < tab->history_count; i++) {
-        printf("%5d  %s\n", i + 1, tab->history[i]);
+    if (tab && tab->shell && tab->shell->history) {
+        history_print(tab->shell->history, stdout);
     }
     fflush(stdout);
     return 0;
@@ -108,7 +132,17 @@ static int builtin_source(const Command *cmd, Tab *tab) {
     char filepath[MAX_PATH_LEN];
     path_expand_tilde(cmd->argv[1], filepath, sizeof(filepath));
 
-    FILE *fp = fopen(filepath, "r");
+    char resolved_path[MAX_PATH_LEN * 2];
+    if (filepath[0] == '/') {
+        safe_strncpy(resolved_path, filepath, sizeof(resolved_path));
+    } else {
+        snprintf(resolved_path, sizeof(resolved_path), "%s/%s", tab->cwd, filepath);
+    }
+
+    FILE *fp = fopen(resolved_path, "r");
+    if (!fp) {
+        fp = fopen(filepath, "r");
+    }
     if (!fp) {
         fprintf(stderr, "terminator: source: %s: %s\n", filepath, strerror(errno));
         return 1;

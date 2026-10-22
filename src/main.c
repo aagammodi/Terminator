@@ -3,14 +3,16 @@
 #include "gui.h"
 #include "executor.h"
 #include "util.h"
+#include "ipc.h"
 #include <stdio.h>
 #include <string.h>
+#include <strings.h>
 
 static void print_usage(const char *prog) {
     printf("Terminator — Custom Terminal Emulator & Shell (Phase 1)\n");
     printf("Usage:\n");
-    printf("  %s                      Run X11 GUI terminal (default)\n", prog);
-    printf("  %s useProcess=True      Process mode (architecture flag)\n", prog);
+    printf("  %s                      Run X11 GUI terminal (Thread Mode default)\n", prog);
+    printf("  %s useProcess=True      Run in Process Mode (per-tab child processes)\n", prog);
     printf("  %s -c <command>         Execute command string and exit\n", prog);
     printf("  %s --test               Run in headless test shell mode\n", prog);
     printf("  %s --help               Display this help message\n", prog);
@@ -83,18 +85,43 @@ static int run_headless_shell(Shell *shell) {
         safe_strncpy(exec_cmd, tab->accumulated_cmd, sizeof(exec_cmd));
         tab->accumulated_cmd[0] = '\0';
 
-        executor_run_line(tab, exec_cmd);
-
-        /* Pump child output synchronously in headless mode */
-        if (tab->out_pipe_fd >= 0) {
-            char buf[4096];
-            ssize_t n;
-            while ((n = read(tab->out_pipe_fd, buf, sizeof(buf))) > 0) {
-                terminal_append_output_bytes(tab, buf, (size_t)n, false);
+        if (tab->to_worker_pipe[1] >= 0) {
+            ipc_send_msg(tab->to_worker_pipe[1], IPC_MSG_EXEC, exec_cmd, (uint32_t)strlen(exec_cmd));
+            IPCHeader hdr;
+            while (ipc_recv_header(tab->from_worker_pipe[0], &hdr)) {
+                if (hdr.type == IPC_MSG_OUTPUT) {
+                    char *buf = xmalloc(hdr.length + 1);
+                    if (hdr.length > 0) {
+                        ipc_recv_payload(tab->from_worker_pipe[0], buf, hdr.length);
+                    }
+                    fwrite(buf, 1, hdr.length, stdout);
+                    fflush(stdout);
+                    free(buf);
+                } else if (hdr.type == IPC_MSG_PROMPT) {
+                    int status = 0;
+                    if (hdr.length >= sizeof(int)) {
+                        ipc_recv_payload(tab->from_worker_pipe[0], &status, sizeof(int));
+                    }
+                    tab->last_exit_status = status;
+                    break;
+                } else if (hdr.type == IPC_MSG_CWD) {
+                    char buf[MAX_PATH_LEN];
+                    uint32_t c_len = (hdr.length < sizeof(buf) - 1) ? hdr.length : (sizeof(buf) - 1);
+                    if (c_len > 0) ipc_recv_payload(tab->from_worker_pipe[0], buf, c_len);
+                    buf[c_len] = '\0';
+                    safe_strncpy(tab->cwd, buf, sizeof(tab->cwd));
+                } else if (hdr.type == IPC_MSG_EXIT) {
+                    tab->request_close = true;
+                } else {
+                    if (hdr.length > 0) {
+                        char *dummy = xmalloc(hdr.length);
+                        ipc_recv_payload(tab->from_worker_pipe[0], dummy, hdr.length);
+                        free(dummy);
+                    }
+                }
             }
-            close(tab->out_pipe_fd);
-            tab->out_pipe_fd = -1;
-            executor_reap_children(tab);
+        } else {
+            executor_run_line(tab, exec_cmd);
         }
         tab->state = SHELL_STATE_READY;
 
@@ -112,6 +139,7 @@ static int run_headless_shell(Shell *shell) {
 
 int main(int argc, char **argv) {
     bool force_headless = false;
+    bool use_process_mode = false;
     const char *eval_cmd = NULL;
 
     for (int i = 1; i < argc; i++) {
@@ -122,29 +150,70 @@ int main(int argc, char **argv) {
             force_headless = true;
         } else if (strcmp(argv[i], "-c") == 0 && i + 1 < argc) {
             eval_cmd = argv[++i];
-        } else if (strncmp(argv[i], "useProcess=", 11) == 0) {
-            /* Handled in architecture configuration */
-            term_log("terminator: process mode flag noted: %s\n", argv[i]);
+        } else if (strncasecmp(argv[i], "useProcess=", 11) == 0) {
+            const char *val = argv[i] + 11;
+            if (strcasecmp(val, "true") == 0 || strcmp(val, "1") == 0 || strcasecmp(val, "yes") == 0) {
+                use_process_mode = true;
+            } else {
+                use_process_mode = false;
+            }
+        } else if (strcmp(argv[i], "--process") == 0) {
+            use_process_mode = true;
         }
     }
 
-    /* Initialize Shell with 1 Tab */
-    Shell *shell = shell_create(NULL);
+    /* Initialize Shell with 1 Tab in requested architecture mode */
+    Shell *shell = shell_create(NULL, use_process_mode);
     Tab *tab = shell_get_active_tab(shell);
 
-    /* If -c was provided, run command directly and exit */
+    /* If -c was provided, run command and exit */
     if (eval_cmd) {
         tab->echo_to_stdout = true;
-        executor_run_line(tab, eval_cmd);
-        if (tab->out_pipe_fd >= 0) {
-            char buf[4096];
-            ssize_t n;
-            while ((n = read(tab->out_pipe_fd, buf, sizeof(buf))) > 0) {
-                terminal_append_output_bytes(tab, buf, (size_t)n, false);
+        if (tab->to_worker_pipe[1] >= 0) {
+            ipc_send_msg(tab->to_worker_pipe[1], IPC_MSG_EXEC, eval_cmd, (uint32_t)strlen(eval_cmd));
+            IPCHeader hdr;
+            while (ipc_recv_header(tab->from_worker_pipe[0], &hdr)) {
+                if (hdr.type == IPC_MSG_OUTPUT) {
+                    char *buf = xmalloc(hdr.length + 1);
+                    if (hdr.length > 0) {
+                        ipc_recv_payload(tab->from_worker_pipe[0], buf, hdr.length);
+                    }
+                    fwrite(buf, 1, hdr.length, stdout);
+                    fflush(stdout);
+                    free(buf);
+                } else if (hdr.type == IPC_MSG_PROMPT) {
+                    int status = 0;
+                    if (hdr.length >= sizeof(int)) {
+                        ipc_recv_payload(tab->from_worker_pipe[0], &status, sizeof(int));
+                    }
+                    tab->last_exit_status = status;
+                    break;
+                } else if (hdr.type == IPC_MSG_CWD) {
+                    char buf[MAX_PATH_LEN];
+                    uint32_t c_len = (hdr.length < sizeof(buf) - 1) ? hdr.length : (sizeof(buf) - 1);
+                    if (c_len > 0) ipc_recv_payload(tab->from_worker_pipe[0], buf, c_len);
+                    buf[c_len] = '\0';
+                    safe_strncpy(tab->cwd, buf, sizeof(tab->cwd));
+                } else {
+                    if (hdr.length > 0) {
+                        char *dummy = xmalloc(hdr.length);
+                        ipc_recv_payload(tab->from_worker_pipe[0], dummy, hdr.length);
+                        free(dummy);
+                    }
+                }
             }
-            close(tab->out_pipe_fd);
-            tab->out_pipe_fd = -1;
-            executor_reap_children(tab);
+        } else {
+            executor_run_line(tab, eval_cmd);
+            if (tab->out_pipe_fd >= 0) {
+                char buf[4096];
+                ssize_t n;
+                while ((n = read(tab->out_pipe_fd, buf, sizeof(buf))) > 0) {
+                    terminal_append_output_bytes(tab, buf, (size_t)n, false);
+                }
+                close(tab->out_pipe_fd);
+                tab->out_pipe_fd = -1;
+                executor_reap_children(tab);
+            }
         }
         int exit_code = tab->last_exit_status;
         shell_destroy(shell);

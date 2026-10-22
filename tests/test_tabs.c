@@ -24,7 +24,7 @@ int main(void) {
     printf("=== Running Task 1 Multi-Tab State & Lifecycle Tests ===\n");
 
     /* 1. Shell creation has 1 tab */
-    Shell *shell = shell_create("/tmp");
+    Shell *shell = shell_create("/tmp", false);
     TEST_ASSERT("Initial shell has exactly 1 tab", shell->num_tabs == 1);
     TEST_ASSERT("Initial active tab index is 0", shell->active_tab_idx == 0);
     TEST_ASSERT("Initial tab cwd is /tmp", strcmp(shell->tabs[0]->cwd, "/tmp") == 0);
@@ -78,6 +78,19 @@ int main(void) {
     /* Clean destruction */
     shell_destroy(shell);
     TEST_ASSERT("shell_destroy completes without errors", 1);
+
+    /* 10. Process Mode Tabs lifecycle test */
+    printf("--- Testing Mode B: Process Mode tabs ---\n");
+    Shell *pshell = shell_create("/tmp", true);
+    TEST_ASSERT("Process mode shell initialized", pshell != NULL && pshell->use_process_mode == true);
+    TEST_ASSERT("Process mode initial tab has child_pid > 0", pshell->tabs[0]->child_pid > 0);
+    Tab *pt2 = shell_open_tab(pshell, "/var");
+    TEST_ASSERT("Process mode open tab has child_pid > 0", pt2 != NULL && pt2->child_pid > 0);
+    TEST_ASSERT("Process mode num_tabs is 2", pshell->num_tabs == 2);
+    shell_close_tab(pshell, 1);
+    TEST_ASSERT("Process mode close tab leaves 1 tab", pshell->num_tabs == 1);
+    shell_destroy(pshell);
+    TEST_ASSERT("Process mode shell_destroy cleans up", 1);
 
     printf("=== Multi-Tab Result: %d Passed, %d Failed ===\n", passes, failures);
     return (failures == 0) ? 0 : 1;

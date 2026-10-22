@@ -8,12 +8,22 @@ It features a custom-built GUI window, genuine shell lexer and parser, process o
 
 ## 1. Implemented Features (Tasks 1–5)
 
-### Task 1 — X11 GUI, Multi-Tab Interaction & Color Rendering
+### Task 1 — X11 GUI, Multi-Tab Interaction, Thread/Process Modes & Functional Scrollbar
 - **Native Xlib Window**: Built directly with `XOpenDisplay`, `XCreateWindow`, `XMapWindow`, `XSelectInput`, `XNextEvent`, and `XDrawString`.
 - **Double-Buffered Rendering**: Smooth rendering via an off-screen `Pixmap` back-buffer, preventing flicker during typing and rapid output streaming.
 - **Neon Aurora Theme**: Bespoke visual palette (#19172B rich dark background, #24213B secondary surface, #302A4B elevated tab cards, #A78BFA purple accents, #22D3EE bright turquoise/cyan prompts, #F472B6 neon pink user badges, #60A5FA blue directory accents, #A6E3A1 soft green status indicators, #F0ABFC cursor).
+- **Dual Architecture Execution Modes (Mode A & Mode B)**:
+  - **Mode A — Thread Mode (`./terminator`, default)**: Exactly one Terminator process owns the X11 GUI. Each tab is represented by an independent POSIX thread (`pthread_create`), isolated shell state/CWD/jobs, and shared command history synchronized via a thread mutex.
+  - **Mode B — Process Mode (`./terminator useProcess=True`)**: Parent process owns X11. Each newly opened tab is represented by an independent child process (`fork()`) communicating via bidirectional IPC pipes. Command history is shared in POSIX shared memory (`shm_open` + `mmap(MAP_SHARED)`) protected by a **process-shared semaphore** (`sem_init(..., 1, 1)`). Tab failure or exit does not crash unrelated tabs or the GUI.
+- **Assignment-Compliant Functional Vertical Scrollbar**:
+  - Visible scrollbar track and proportionally sized thumb (`thumb_h = (sb_h * visible_rows) / total_rows`, minimum 24px).
+  - Accurate viewport positioning matching exact scrollback buffer depth.
+  - Track clicking: clicking above the thumb pages up; clicking below the thumb pages down.
+  - Smooth thumb dragging: grabs the thumb with pixel-accurate offset and updates `scroll_offset` smoothly during pointer motion (`Button1MotionMask`).
+  - Bottom-following behavior: when at the bottom (`scroll_offset == 0`), new output automatically follows the bottom. Scrolled up (`scroll_offset > 0`), new output accumulates in the buffer without forcefully jerking the user's viewport back down.
+  - Resizing responsiveness: recalculates viewport lines and scroll geometry dynamically on window resize.
 - **Interactive Multi-Tab Support**:
-  - Independent tabs (up to 16) each with their own isolated working directory, input buffer, scrollback buffer, history, running process, and cursor.
+  - Independent tabs (up to 16) each with their own isolated working directory, input buffer, scrollback buffer, history navigation, worker thread/process, running process, and cursor.
   - Interactive top bar showing all open tabs: `[ 1: ~/Downloads ] [ 2: /tmp ] [ + ]`.
   - Open new tabs via mouse click on `[ + ]` or `Ctrl+Shift+T`.
   - Switch tabs via mouse click on any tab card, `Ctrl+PageUp` / `Ctrl+PageDown`, or `Ctrl+1` through `Ctrl+9`.
@@ -21,14 +31,13 @@ It features a custom-built GUI window, genuine shell lexer and parser, process o
   - Active tab highlighted with elevated surface background, glowing violet accent underline, and vibrant typography.
   - Text truncation with ellipses (`...`) dynamically accommodates window resizing without overlapping.
 - **Asynchronous Multi-Tab Background Execution**:
-  - The `poll()` event loop simultaneously watches the X11 connection and the output pipes of **all** open tabs.
+  - The `poll()` event loop simultaneously watches the X11 connection and the worker IPC pipes of **all** open tabs.
   - Hidden background tabs continue running commands and collecting output asynchronously into their own buffers without blocking the GUI or other tabs.
 - **ANSI SGR Color Rendering**:
   - Full Select Graphic Rendition (SGR) parser (`\033[...m`) supporting standard (30–37), bold/bright, and high-intensity (90–97) color codes.
   - Commands such as `ls --color=always` render in vibrant colors (directories in blue, executables in green, errors in red, etc.) mapped directly to the Neon Aurora palette.
 - **Status Area**: Subtle bottom status bar showing active tab index and total count `[TAB x/y]`, compact current working directory, previous exit status `$?`, and line count.
 - **Full Line Editor & Single-Prompt Invariant**: Real-time character insertion, Backspace, Delete, Left/Right arrow cursor movement, Home, End, Ctrl+A, Ctrl+E, Ctrl+U (delete to start), Ctrl+K (delete to end), Ctrl+W (delete word backward), and Ctrl+L (clear screen). Enforces an explicit `ShellState` lifecycle guaranteeing exactly one active prompt at any time without phantom duplicates.
-- **Scrollback Buffer**: Dynamic line storage up to 10,000 lines per tab, scrollable via PageUp / PageDown and mouse wheel (Button4 / Button5), with a proportional scrollbar indicator and automatic return-to-bottom on new input.
 
 ### Task 2 — Built-in & External Commands
 - **External Commands**: Executed via `fork()` + `execvp()`. When a command is not found, displays `terminator: <cmd>: command not found` and sets exit code 127 without crashing the GUI.
@@ -115,17 +124,25 @@ make clean
 
 ## 4. How to Run
 
-### Graphical GUI Mode (Default)
+### Graphical GUI Mode: Thread Mode (Default)
 When running on an X11 desktop or XWayland session:
 ```bash
 ./terminator
 ```
-This opens the Terminator X11 window with the Neon Aurora theme.
+This opens the Terminator X11 window where each tab executes on its own independent POSIX worker thread (`pthread_create`), sharing command history synchronized with a mutex.
+
+### Graphical GUI Mode: Process Mode (Architecture Flag)
+To launch Terminator in full multiprocess mode:
+```bash
+./terminator useProcess=True
+```
+In Process Mode, the parent process manages X11 while each tab runs in its own child process created via `fork()`. Command history is stored in POSIX shared memory (`shm_open`, `mmap`) protected by a **process-shared semaphore** (`sem_init(..., 1, 1)`).
 
 ### Headless / Shell Test Mode
-If running in a container, remote SSH terminal without X11, or for CLI evaluation:
+If running in a container, remote SSH terminal without X11, or for automated testing:
 ```bash
 ./terminator --test
+./terminator useProcess=True --test
 ```
 You will enter an interactive Terminator shell session with full prompt, multiline input, built-ins, pipelines, and redirections.
 
@@ -133,23 +150,26 @@ You will enter an interactive Terminator shell session with full prompt, multili
 To execute a command string through the Terminator engine and print output:
 ```bash
 ./terminator -c "printf 'pear\napple\norange\n' | sort | head -2"
-./terminator -c 'echo "Current Directory: $(basename $(pwd))"'
+./terminator useProcess=True -c 'echo "Current Directory: $(basename $(pwd))"'
 ```
 
 ---
 
 ## 5. Automated Test Suite
 
-Run the full automated test suite covering Tasks 1–5:
+Run the complete 149-test automated test suite covering Tasks 1–5, Thread Mode, Process Mode, and Scrollbar mechanics:
 ```bash
 make test
 ```
-Or execute the test scripts individually:
+Or execute the test components individually:
 ```bash
-bash tests/test_commands.sh     # Built-ins, external commands, $?
-bash tests/test_redirection.sh    # <, >, >>, missing files, built-in redirection
-bash tests/test_pipelines.sh      # 2, 3, 4, 5-stage pipes, deadlock tests
-bash tests/test_multiline.sh      # Quotes, multiline \, $(...), backticks, globs
+./tests/test_tabs                    # Multi-tab lifecycle, bounds, and isolation
+./tests/test_modes_and_scrollbar     # Scrollbar geometry, Mode A threads, Mode B processes, crash isolation
+python3 tests/test_ui_and_lifecycle.py # Interactive PTY lifecycle in both Thread and Process modes
+bash tests/test_commands.sh          # Built-ins, external commands, $?
+bash tests/test_redirection.sh       # <, >, >>, missing files, built-in redirection
+bash tests/test_pipelines.sh         # 2, 3, 4, 5-stage pipes, deadlock tests
+bash tests/test_multiline.sh         # Quotes, multiline \, $(...), backticks, globs
 ```
 
 ---
@@ -214,7 +234,6 @@ sort < input.txt | uniq -c > counts.txt
 ## 7. Known Limitations & Deferred Features (Tasks 6–11)
 
 As specified in the course project phase guidelines:
-- **Thread & Process Concurrency Modes with Shared IPC**: Phase 1 implements isolated multi-tab state and asynchronous output polling within the application process. POSIX thread-per-tab (Thread mode) and fork-per-tab with shared memory & POSIX semaphores (Process mode `useProcess=True`) are specified in the Under All / Act 4 phase.
 - **Signals & Process Group Job Control**: Background job operators (`&`), stopped jobs, Ctrl+Z, and active foreground process group management are deferred to Task 8.
 - **multiWatch**: Parallel command runner with periodic polling is deferred to Task 6.
 - **Searchable History & Ctrl+R**: 10,000-entry persistent disk history with longest-common-substring search is deferred to Task 9.

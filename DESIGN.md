@@ -1,334 +1,203 @@
 # Terminator Architecture & Systems Design
 
-This document details the engineering architecture, data structures, POSIX system-call workflows, and execution models of **Terminator** (Phase 1, Tasks 1–5).
+This document details the engineering architecture, data structures, POSIX system-call workflows, and execution models of **Terminator**.
 
 ---
 
 ## 1. Overall System Architecture
 
 Terminator is composed of two primary subsystems operating in harmony:
-1. **The X11 Terminal Presentation Engine**: Responsible for window creation, font metrics, event handling, double-buffered rendering, input line editing, and scrollback visualization.
+1. **The X11 Terminal Presentation Engine**: Responsible for window creation, font metrics, event handling, double-buffered rendering, input line editing, proportional scrollbar interaction, and scrollback visualization.
 2. **The Shell & Process Execution Engine**: Responsible for lexical tokenization, quoting rules, variable expansion, nested command substitutions, globbing, I/O redirection, pipeline construction, child process lifecycle management, and output streaming.
 
+Terminator provides two distinct, assignment-compliant concurrency architectures:
+- **Mode A (Thread Mode — Default)**: The GUI runs in the main thread; each tab runs an independent POSIX thread (`pthread_create`). Shared history is synchronized via `pthread_mutex_t`.
+- **Mode B (Process Mode — `useProcess=True`)**: The GUI runs in the parent process; each tab runs in an independent child process (`fork()`). Shared history resides in POSIX shared memory (`shm_open`, `mmap`) protected by a **process-shared semaphore** (`sem_init(..., 1, 1)`).
+
+Both modes share a symmetric, framed IPC protocol across unidirectional pipe pairs (`to_worker_pipe` and `from_worker_pipe`), ensuring consistent behavior, clean crash isolation, and identical rendering.
+
 ```
-+--------------------------------------------------------------------+
-|                         Terminator Process                         |
-|                                                                    |
-|  +--------------------+     X11 Events      +-------------------+  |
-|  |  Xlib Window & GC  | <=================> |  poll() Event     |  |
-|  |  (Double-buffered) |                     |  Loop             |  |
-|  +--------------------+                     +---------+---------+  |
-|            ^                                          |            |
-|            | redraws from                             | reads pipe |
-|            v                                          v            |
-|  +--------------------+                     +---------+---------+  |
-|  |  Tab Data Model    |                     | Capture Pipe Read |  |
-|  |  (lines, input,    |                     | fd (tab->out_fd)  |  |
-|  |   cwd, history)    |                     +---------^---------+  |
-|  +---------^----------+                               |            |
-|            |                                          |            |
-|            | runs parsed command                      |            |
-|            v                                          |            |
-|  +--------------------+       pipe() + fork()         |            |
-|  | Shell Engine       | --------------------------+   |            |
-|  | (parser/expansion) |                           |   |            |
-|  +--------------------+                           |   |            |
-+---------------------------------------------------|---|------------+
-                                                    |   |
-                                                    v   |
-                       +--------------------------------+--+
-                       | Child Process / Pipeline          |
-                       |  - dup2() redirection onto fds    |
-                       |  - close() unused descriptors     |
-                       |  - execvp("cmd", argv)            |
-                       |  - stdout / stderr -> capture pipe|
-                       +-----------------------------------+
+=============================================================================
+MODE A — THREAD MODE (Default: ./terminator)
+=============================================================================
++---------------------------------------------------------------------------+
+| Terminator Application Process                                            |
+|                                                                           |
+|  +--------------------+     X11 Events      +--------------------------+  |
+|  |  Xlib Window & GC  | <=================> |  GUI Main Thread (poll)  |  |
+|  |  (Double-buffered) |                     +------------+-------------+  |
+|  +--------------------+                                  |                |
+|                                     IPC Pipes (to/from)  |                |
+|               +------------------------------------------+                |
+|               |                                          |                |
+|               v                                          v                |
+|  +--------------------------+              +--------------------------+   |
+|  | Tab 1 POSIX Thread       |              | Tab 2 POSIX Thread       |   |
+|  |  - Own shell worker loop |              |  - Own shell worker loop |   |
+|  |  - Private tab->cwd      |              |  - Private tab->cwd      |   |
+|  |  - fork()+execvp() child |              |  - fork()+execvp() child |   |
+|  +------------+-------------+              +------------+-------------+   |
+|               |                                         |                 |
+|               +--------------------+--------------------+                 |
+|                                    v                                      |
+|                     +-----------------------------+                       |
+|                     | Shared In-Memory History    |                       |
+|                     | - Synchronized via Mutex    |                       |
+|                     +-----------------------------+                       |
++---------------------------------------------------------------------------+
+
+=============================================================================
+MODE B — PROCESS MODE (Flag: ./terminator useProcess=True)
+=============================================================================
++---------------------------------------------------------------------------+
+| Parent GUI Process                                                        |
+|  - Owns X11 Display, Window, double-buffer Pixmap, and poll() event loop  |
+|  - Manages tab bar, scrollbar, user input, and terminal rendering         |
++-------------------------------------+-------------------------------------+
+                                      | Framed IPC Pipes
+            +-------------------------+-------------------------+
+            v                                                   v
++-------------------------------+                   +-------------------------------+
+| Tab 1 Child Process           |                   | Tab 2 Child Process           |
+|  - Own shell worker loop      |                   |  - Own shell worker loop      |
+|  - Private CWD (chdir isolated|                   |  - Private CWD (chdir isolated|
+|  - fork()+execvp() pipelines  |                   |  - fork()+execvp() pipelines  |
++---------------+---------------+                   +---------------+---------------+
+                |                                                   |
+                +-------------------------+-------------------------+
+                                          v
+                            +---------------------------+
+                            | POSIX Shared Memory (shm) |
+                            |  - shm_open() + mmap()    |
+                            |  - Process-Shared sem_t   |
+                            |    (sem_init(&sem, 1, 1)) |
+                            +---------------------------+
 ```
 
 ---
 
-## 2. X11 GUI & Event Loop Design
+## 2. Framed IPC Protocol (Common to Modes A & B)
 
-### Window Creation & Graphic Context
-- Window initialization connects to the X server via `XOpenDisplay(NULL)`.
-- The main window is created via `XCreateWindow` using visual and colormap attributes with `CWBackPixel | CWEventMask`.
-- Event masks selected: `ExposureMask | KeyPressMask | ButtonPressMask | StructureNotifyMask`.
-- Window manager protocol `WM_DELETE_WINDOW` is registered via `XInternAtom` and `XSetWMProtocols` to ensure safe window closure without orphan background processes.
-
-### Double-Buffering Mechanism
-Direct-to-window drawing often causes severe flickering during fast scrolling or typing. Terminator implements strict double-buffering:
-1. An off-screen `Pixmap` matching the current window dimensions is created via `XCreatePixmap`.
-2. All drawing operations (background fills, top bar rendering, text strings, selection pills, borders, status bars, and cursors) draw exclusively onto the back-buffer Pixmap.
-3. Once rendering is complete, `XCopyArea` transfers the entire back-buffer Pixmap to the visible X11 window in one atomic screen refresh, followed by `XFlush`.
-4. When the window is resized (`ConfigureNotify`), the old Pixmap is freed and a new Pixmap is reallocated to match the updated geometry.
-
-### Responsive Multi-Tab Non-Blocking Event Loop (poll)
-The heart of Terminator is an event-driven multiplexer that never busy-waits. It monitors the X11 display socket alongside the capture pipes of **all** open tabs:
-
-```c
-struct pollfd fds[1 + MAX_TABS];
-int tab_map[1 + MAX_TABS];
-int nfds = 1;
-fds[0].fd = ConnectionNumber(dpy); /* X11 connection */
-fds[0].events = POLLIN;
-
-/* Watch active output capture pipes across all tabs */
-for (int i = 0; i < shell->num_tabs; i++) {
-    Tab *t = shell->tabs[i];
-    if (t && t->out_pipe_fd >= 0) {
-        fds[nfds].fd = t->out_pipe_fd;
-        fds[nfds].events = POLLIN | POLLHUP | POLLERR;
-        tab_map[nfds] = i;
-        nfds++;
-    }
-}
-
-int pret = poll(fds, nfds, 50); /* 50ms responsive tick */
-```
-
-- When the user presses a key, clicks a tab or button, or resizes the window, `fds[0]` wakes up `poll()`. Pending events are drained using `while (XPending(dpy)) { XNextEvent(...); }`.
-- When any running child process produces output, `fds[i]` wakes up `poll()`. Bytes are read into that specific tab's buffer, so hidden background tabs keep collecting output asynchronously without freezing the GUI.
-- When a child process finishes and closes its write descriptors, `read()` returns 0 (EOF). Terminator detects this, closes the read-end descriptor, reaps all child processes via `waitpid()`, records `$?`, prints the return prompt on that tab, and requests a redraw if it is active.
-- If no events or pipes are active, `poll()` puts the process to sleep in the kernel (near 0% CPU usage).
-
----
-
-## 3. Data Structures & Memory Management
-
-### TerminalLine with ANSI Color Spans
-```c
-typedef struct {
-    char *text;                         /* Character string */
-    uint8_t *colors;                    /* ThemeColorIndex per character (or NULL) */
-    int length;                         /* Character count */
-    LineType type;                      /* LINE_TYPE_NORMAL, PROMPT, CONTINUATION, ERROR */
-} TerminalLine;
-```
-
-### Tab Structure (`struct Tab`)
-The tab data structure represents an isolated shell and terminal instance:
+To guarantee that neither mode experiences partial reads, pipe truncation, or corrupted message frames, all communication between the GUI and tab workers utilizes a framed binary protocol defined in `include/ipc.h`:
 
 ```c
 typedef enum {
-    SHELL_STATE_READY = 0,             /* Ready for input, prompt active */
-    SHELL_STATE_CONTINUATION,          /* Incomplete multiline input */
-    SHELL_STATE_RUNNING                /* Command currently executing */
-} ShellState;
+    IPC_MSG_EXEC   = 1, /* GUI -> Worker: execute command string */
+    IPC_MSG_INT    = 2, /* GUI -> Worker: SIGINT interrupt active foreground job */
+    IPC_MSG_QUIT   = 3, /* GUI -> Worker: terminate worker thread/process */
+    IPC_MSG_OUTPUT = 4, /* Worker -> GUI: output bytes from stdout/stderr */
+    IPC_MSG_PROMPT = 5, /* Worker -> GUI: execution done, payload: int exit_status */
+    IPC_MSG_CWD    = 6, /* Worker -> GUI: working directory changed, payload: path */
+    IPC_MSG_CLEAR  = 7, /* Worker -> GUI: clear screen requested */
+    IPC_MSG_EXIT   = 8  /* Worker -> GUI: exit command requested */
+} IPCMsgType;
 
-typedef struct Tab {
-    int id;                             /* Unique tab identifier (1, 2, ...) */
-    char cwd[MAX_PATH_LEN];             /* Current working directory */
-    ShellState state;                   /* Explicit lifecycle state */
-    struct Shell *shell;                /* Reference to parent shell */
-    bool request_close;                 /* Set when tab requests exit */
-    
-    /* Input line and cursor */
-    char input[MAX_INPUT_LEN];          /* Active line being edited */
-    int cursor;                         /* Cursor position (0 .. strlen) */
-    
-    /* Multiline state */
-    char accumulated_cmd[MAX_CMD_LEN];  /* Accumulated multiline buffer */
-    bool in_continuation;               /* True when waiting for continuation */
-    
-    /* Scrollback buffer */
-    TerminalLine *lines;                /* Dynamic array of terminal lines */
-    int num_lines;                      /* Number of lines stored */
-    int line_capacity;                  /* Capacity of line buffer */
-    
-    /* Incremental stream parser with ANSI color state */
-    char partial_line[MAX_INPUT_LEN];   /* Partial line received from pipe */
-    uint8_t partial_colors[MAX_INPUT_LEN]; /* Per-char ANSI color attribute */
-    int partial_len;                    /* Current bytes in partial line */
-    uint8_t current_fg_color;           /* Active SGR foreground color */
-    
-    /* ANSI CSI escape-sequence parser */
-    AnsiState ansi_state;
-    char csi_buf[64];
-    int csi_len;
-    
-    /* View / Scrolling */
-    int scroll_offset;                  /* Lines scrolled back from bottom */
-    
-    /* Execution state */
-    int out_pipe_fd;                    /* Read end of output capture pipe */
-    pid_t running_pid;                  /* Active child or group leader */
-    pid_t pipeline_pids[MAX_PIPELINE_CMDS]; /* All child PIDs in pipeline */
-    int num_pipeline_pids;              /* Count of child processes */
-    int last_exit_status;               /* Exit status for $? expansion */
-    
-    /* In-memory history */
-    char **history;                     /* Array of historical command strings */
-    int history_count;                  /* History count */
-    int history_capacity;               /* History capacity */
-    int history_index;                  /* Current history browsing index */
-    char saved_draft[MAX_INPUT_LEN];    /* Draft saved during history navigation */
-    
-    bool echo_to_stdout;                /* Set for headless / test modes */
-} Tab;
+typedef struct {
+    uint32_t type;
+    uint32_t length;
+} IPCHeader;
 ```
 
-### Command & Pipeline AST
-```c
-typedef struct Command {
-    char **argv;                        /* NULL-terminated argument vector */
-    int argc;                           /* Argument count */
-    int argv_capacity;                  /* Capacity of argv buffer */
-    char *input_file;                   /* Path for '<' redirection (or NULL) */
-    char *output_file;                  /* Path for '>' / '>>' (or NULL) */
-    bool append_output;                 /* True for '>>', False for '>' */
-} Command;
-
-typedef struct Pipeline {
-    Command *commands;                  /* Array of pipeline stages */
-    int num_commands;                   /* Number of pipeline commands */
-    int capacity;                       /* Allocated capacity */
-} Pipeline;
-```
+Each message consists of an 8-byte `IPCHeader` followed immediately by `length` bytes of payload. Robust I/O helpers `write_all()` and `read_all()` loop over `EINTR` and `EAGAIN` to guarantee atomic delivery.
 
 ---
 
-## 4. Parser & Expansion Architecture
+## 3. Shared History Architecture
 
-The shell parser does not rely on naive `strtok()` splitting. It implements a multi-stage lexer/parser state machine:
+The course specification dictates that command history must be shared across all tabs:
 
-### Stage 1: Incomplete Command Detection
-Before attempting execution, the lexer scans the raw command string tracking quote states:
-- Unquoted state
-- Single-quote state (`'...'`)
-- Double-quote state (`"..."`)
-- Escape state (`\` outside single quotes)
-- Command substitution nesting (`$(...)` parenthesis depth and `` `...` ``)
+### Thread Mode (Mode A)
+- Stored on the heap as `SharedHistory`.
+- Synchronized using a standard POSIX `pthread_mutex_t`.
+- When any tab executes a command, `history_add()` acquires the mutex, appends the line into circular history entries, and releases the mutex.
 
-If the line ends with an unclosed single quote, unclosed double quote, unclosed substitution, or an unescaped trailing `\`, `parser_is_incomplete()` returns `true`. The terminal preserves the accumulated text, displays the continuation prompt `> `, and waits for further user input.
-
-### Stage 2: Recursive Innermost Command Substitution
-Substitutions (`$(cmd)` and `` `cmd` ``) are resolved recursively:
-1. The lexer scans for the innermost substitution candidate (a substitution containing no nested `$(` or `` ` `` before its termination).
-2. The inner command text is extracted and passed to `executor_execute_substitution_sync()`.
-3. The inner command is parsed and executed through Terminator's own pipeline engine with stdout directed to an internal pipe.
-4. The output is collected until EOF, trailing newlines are stripped, and the output string replaces the `$(...)` expression.
-5. The scan repeats until all substitutions are resolved.
-
-### Stage 3: Variable Expansion
-The substituted string is expanded for `$VAR`, `${VAR}`, `$?`, and `$$`:
-- Single-quoted segments are strictly untouched: `'literal: $HOME'` remains `'literal: $HOME'`.
-- Double-quoted and unquoted segments expand variables: `"expanded: $HOME"` expands `$HOME` to `/home/user`.
-- Escaped dollars (`\$`) produce literal `$`.
-
-### Stage 4: Pipeline Splitting & Word Tokenization
-1. The expanded command line is split into pipeline stages by unquoted pipe characters (`|`).
-2. Each stage is scanned for redirection operators (`<`, `>`, `>>`). Redirection filenames are extracted.
-3. Arguments are tokenized with quote-removal:
-   - Outer quotes are stripped while preserving the content and internal spaces intact.
-   - Tokens containing unquoted wildcards (`*`, `?`, `[...]`) are expanded via POSIX `glob()`.
-   - Quoted wildcards (e.g. `"*.txt"`) are protected from globbing.
-   - The resulting `argv` vector is constructed and null-terminated.
+### Process Mode (Mode B)
+- Allocated in POSIX shared memory using:
+  ```c
+  int shm_fd = shm_open(shm_name, O_CREAT | O_RDWR, 0600);
+  ftruncate(shm_fd, sizeof(SharedHistory));
+  SharedHistory *hist = mmap(NULL, sizeof(SharedHistory), PROT_READ | PROT_WRITE, MAP_SHARED, shm_fd, 0);
+  ```
+- Protected by a **process-shared POSIX semaphore**:
+  ```c
+  sem_init(&hist->sem, 1, 1); /* pshared = 1: shared between processes */
+  ```
+- Because child processes are created via `fork()`, they inherit the `MAP_SHARED` mapping and the semaphore.
+- Operations on history invoke `sem_wait(&hist->sem)` before accessing entries and `sem_post(&hist->sem)` upon completion, guaranteeing mutual exclusion across distinct process address spaces without race conditions or memory corruption.
 
 ---
 
-## 5. File Descriptors, Redirection & Pipelines
+## 4. Working Directory & Job Isolation
 
-### Single Command Redirection
-For a single command with `< in.txt > out.txt`:
-
-```
-Parent Shell:
-   - Creates capture_pipe[2]
-   - fork()
-   - In Child:
-       in_fd  = open("in.txt", O_RDONLY)
-       out_fd = open("out.txt", O_WRONLY | O_CREAT | O_TRUNC, 0644)
-       dup2(in_fd, STDIN_FILENO);   close(in_fd)
-       dup2(out_fd, STDOUT_FILENO); close(out_fd)
-       dup2(capture_pipe[1], STDERR_FILENO)
-       close(capture_pipe[0]); close(capture_pipe[1])
-       execvp(argv[0], argv)
-   - In Parent:
-       close(capture_pipe[1])
-       tab->out_pipe_fd = capture_pipe[0]
-       waitpid(pid, &status, WNOHANG) via event loop
-```
-
-### Pipeline Descriptor Management ($N$ Commands)
-For a pipeline `cmd1 | cmd2 | ... | cmdN`:
-1. Create $N-1$ pipes: `int pipes[N-1][2]`.
-2. Create terminal output capture pipe: `int capture_pipe[2]`.
-3. Fork $N$ children:
-   - **Child $0$**:
-     - STDIN: Redirected from file if `< in.txt` was given.
-     - STDOUT: `dup2(pipes[0][1], STDOUT_FILENO)`.
-     - STDERR: `dup2(capture_pipe[1], STDERR_FILENO)`.
-   - **Child $i$ ($0 < i < N-1$)**:
-     - STDIN: `dup2(pipes[i-1][0], STDIN_FILENO)`.
-     - STDOUT: `dup2(pipes[i][1], STDOUT_FILENO)`.
-     - STDERR: `dup2(capture_pipe[1], STDERR_FILENO)`.
-   - **Child $N-1$ (Final Command)**:
-     - STDIN: `dup2(pipes[N-2][0], STDIN_FILENO)`.
-     - STDOUT: If `> out.txt` given, redirected to file; otherwise `dup2(capture_pipe[1], STDOUT_FILENO)`.
-     - STDERR: `dup2(capture_pipe[1], STDERR_FILENO)`.
-4. **Child Descriptor Cleanup**:
-   Every child closes all ends of all $N-1$ pipeline pipes and both ends of `capture_pipe`.
-5. **Parent Descriptor Cleanup (Deadlock Prevention)**:
-   Immediately after all $N$ children are forked, the parent closes all $2 \times (N-1)$ pipe descriptors and closes `capture_pipe[1]`.
-   *Critical principle*: If the parent forgets to close any write end, the downstream reader will never receive EOF, causing an eternal hang. Terminator guarantees immediate parent cleanup.
-6. **Parent Child Reaping**:
-   Parent monitors `capture_pipe[0]` in `poll()`. Upon EOF, parent iterates through all recorded PIDs with `waitpid(pid, &status, 0)` and records the exit status of child $N-1$ into `tab->last_exit_status`.
+In a multi-tab terminal, each tab must maintain an independent working directory:
+- **Thread Mode Isolation**: In Linux, the `chdir()` system call affects the entire process (all threads). To achieve true directory isolation in Thread Mode without kernel modifications:
+  1. Each tab records its own path in `tab->cwd`.
+  2. The built-in `cd` updates `tab->cwd` (after validating with `stat()`) without altering the global process directory.
+  3. When an external command is launched, the forked child process executes `chdir(tab->cwd)` immediately after `fork()` before redirection or `execvp()`.
+  4. Built-in `pwd` prints `tab->cwd`.
+- **Process Mode Isolation**: Because each tab has an independent process address space, `builtin_cd` calls `chdir(tab->cwd)` directly inside the tab child process.
 
 ---
 
-## 6. Execution Model Evolution (Roadmap to Phase 2)
+## 5. Functional Vertical Scrollbar Design & Mathematics
 
-Phase 1 establishes the single-tab foundation with full isolation of the tab state data structure. Here is how the architecture is designed to evolve into Tasks 6–11:
+Terminator features a fully functional vertical scrollbar built directly in Xlib:
 
-### Current Single-Tab Foundation (Phase 1)
-- The application owns the X11 connection and event loop.
-- The single tab's shell engine runs within the application process.
-- All external commands run as forked child processes.
-- The tab structure encapsulates working directory, input buffer, scrollback history, and running child PIDs.
+### Geometry & Proportional Sizing
+Given:
+- `term_top`: Top margin below the tab bar (`bar_h + padding_y`)
+- `term_bottom`: Bottom margin above status bar (`h - stat_h - padding_y`)
+- `term_height`: Usable height `term_bottom - term_top`
+- `line_h`: Line spacing (`font_height + 6`)
+- `visible_rows`: `term_height / line_h`
+- `total_rows`: `tab->num_lines + (show_input_row ? 1 : 0)`
+- `max_scroll`: `total_rows > visible_rows ? total_rows - visible_rows : 0`
 
-### Thread Mode (Task 6+ Architecture)
-```
-+-------------------------------------------------------------+
-|                     Terminator Application                  |
-|                                                             |
-|  [ GUI Thread ]                                             |
-|    - Owns X11 Display, Window, and Event Loop               |
-|    - Double-buffers rendering from tab buffers              |
-|                                                             |
-|  [ Tab 1 Thread ]               [ Tab 2 Thread ]            |
-|    - Shell engine tab 1           - Shell engine tab 2      |
-|    - Own working directory        - Own working directory   |
-|    - fork() + exec child jobs     - fork() + exec child jobs|
-|                                                             |
-|  [ Shared State ]                                           |
-|    - In-memory global history protected by pthread_mutex_t  |
-|    - Thread-safe clipboard                                  |
-+-------------------------------------------------------------+
-```
+Scrollbar dimensions:
+- Track: `sb_x = w - sb_w - 4`, `sb_y = term_top`, `sb_w = 8`, `sb_h = term_height`
+- Thumb Height:
+  $$\text{thumb\_h} = \max\left(24, \frac{\text{sb\_h} \times \text{visible\_rows}}{\text{total\_rows}}\right)$$
+  When content fits entirely (`max_scroll == 0`), $\text{thumb\_h} = \text{sb\_h}$.
+- Travel distance: $\text{travel} = \text{sb\_h} - \text{thumb\_h}$
+- Thumb Y Coordinate:
+  $$\text{thumb\_y} = \text{sb\_y} + \text{round}\left(\frac{\text{max\_scroll} - \text{scroll\_offset}}{\text{max\_scroll}} \times \text{travel}\right)$$
 
-### Process Mode (`useProcess=True`) (Task 6+ Architecture)
-```
-+-------------------------------------------------------------+
-|                      Parent GUI Process                     |
-|    - Owns X11 Display and poll() loop                       |
-|    - Reads tab output pipes                                 |
-+------------------------------+------------------------------+
-                               | IPC pipes
-        +----------------------+----------------------+
-        v                                             v
-+-------------------------------+   +-------------------------------+
-|     Tab 1 Process (Child)     |   |     Tab 2 Process (Child)     |
-|   - Own shell engine          |   |   - Own shell engine          |
-|   - Private CWD, private fds  |   |   - Private CWD, private fds  |
-|   - fork() + exec commands    |   |   - fork() + exec commands    |
-+---------------+---------------+   +---------------+---------------+
-                |                                   |
-                +-----------------+-----------------+
-                                  v
-                    +---------------------------+
-                    | Shared Memory (POSIX shm) |
-                    | - Global history buffer   |
-                    | - Process-shared sem_t    |
-                    +---------------------------+
-```
-Because `Tab` state is completely decoupled from global variables and Xlib calls are kept strictly in the GUI presentation layer, transitioning from single-tab to multi-tab Thread or Process mode in Phase 2 requires no rewrite of the parser, expansion, redirection, or pipeline execution engine.
+### Interaction Handlers
+- **Track Clicking (Page Navigation)**:
+  - Clicking on the track *above* the thumb calls `terminal_scroll_up(tab, visible_rows - 1)` (Page Up).
+  - Clicking on the track *below* the thumb calls `terminal_scroll_down(tab, visible_rows - 1)` (Page Down).
+- **Smooth Thumb Dragging**:
+  - Clicking on the thumb sets `gui->sb_dragging = true` and records `sb_thumb_grab_y = event->y - thumb_y`.
+  - Mouse motion with Button 1 held (`Button1MotionMask`) computes:
+    $$\text{fraction} = \frac{\text{clamp}(\text{event->y} - \text{sb\_thumb\_grab\_y}, \text{sb\_y}, \text{sb\_y} + \text{travel}) - \text{sb\_y}}{\text{travel}}$$
+    $$\text{new\_offset} = \text{round}((1 - \text{fraction}) \times \text{max\_scroll})$$
+- **Bottom-Following Behavior**:
+  - When the viewport is at the bottom (`scroll_offset == 0`), incoming output automatically keeps the viewport pinned to the bottom.
+  - When the user has scrolled up to inspect previous output (`scroll_offset > 0`), incoming output increments `scroll_offset++` so the user's visible text position remains undisturbed without jumping to the bottom.
+
+---
+
+## 6. X11 Double-Buffered Event Loop & Child Reaping
+
+The event loop in `gui_run_event_loop()` uses POSIX `poll()` without busy-waiting:
+1. `fds[0]` watches `ConnectionNumber(gui->dpy)` (`POLLIN`).
+2. `fds[1..N]` watch `tab->from_worker_pipe[0]` across all open tabs (`POLLIN | POLLHUP | POLLERR`).
+3. `poll()` sleeps in the kernel with a 20ms timeout, ensuring instantaneous response to keyboard, mouse, and resize events at 50fps while consuming near 0% CPU at idle.
+4. If a tab worker process is killed (`POLLHUP`), the GUI reaps the child via `waitpid(..., WNOHANG)` and displays a clean error banner without crashing unrelated tabs or the X11 GUI.
+
+---
+
+## 7. Pipeline & Redirection Execution Details
+
+### Pipeline Execution Workflow (`cmd1 | cmd2 | ... | cmdN`)
+1. Create $N-1$ pipes via `pipe()`.
+2. For each command $0 \le i < N$:
+   - `fork()` child process.
+   - Child connects stdin from pipe $i-1$ (or `< file` if $i=0$).
+   - Child connects stdout to pipe $i$ (or `> file` or `capture_pipe` if $i=N-1$).
+   - Child closes all unused pipe ends.
+   - Child executes `chdir(tab->cwd)`.
+   - Child invokes `execvp()`.
+3. Parent closes all $2 \times (N-1)$ pipe descriptors immediately to prevent EOF deadlocks.
+4. Output is streamed incrementally through `capture_pipe` to prevent kernel pipe buffer deadlock on large outputs (verified with 1MB+ streams).
+5. `waitpid()` reaps all child processes and records the exit status of command $N-1$ into `tab->last_exit_status`.

@@ -78,6 +78,7 @@ static int run_headless_shell(Shell *shell) {
         }
 
         tab->in_continuation = false;
+        tab->state = SHELL_STATE_RUNNING;
         char exec_cmd[MAX_CMD_LEN];
         safe_strncpy(exec_cmd, tab->accumulated_cmd, sizeof(exec_cmd));
         tab->accumulated_cmd[0] = '\0';
@@ -95,6 +96,7 @@ static int run_headless_shell(Shell *shell) {
             tab->out_pipe_fd = -1;
             executor_reap_children(tab);
         }
+        tab->state = SHELL_STATE_READY;
     }
 
     return tab->last_exit_status;

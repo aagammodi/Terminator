@@ -4,20 +4,21 @@
 #include <string.h>
 
 static const char *neon_aurora_hex[COLOR_COUNT] = {
-    [COLOR_BG]             = "#1A1930",
-    [COLOR_SURFACE_SEC]     = "#25233D",
-    [COLOR_SURFACE_ELEV]    = "#302C4D",
-    [COLOR_FG_MAIN]         = "#F0EFFA",
-    [COLOR_FG_SEC]          = "#A6ADC8",
-    [COLOR_PRIMARY_VIOLET]  = "#7C3AED",
-    [COLOR_ELECTRIC_CYAN]   = "#22D3EE",
-    [COLOR_NEON_PINK]       = "#F472B6",
-    [COLOR_SOFT_GREEN]      = "#A6E3A1",
-    [COLOR_WARM_ORANGE]     = "#FAB387",
-    [COLOR_ERROR_RED]       = "#F38BA8",
-    [COLOR_BORDER]          = "#484064",
-    [COLOR_SELECTION]       = "#454064",
-    [COLOR_CURSOR]          = "#C4B5FD"
+    [COLOR_BG]             = "#19172B",
+    [COLOR_SURFACE_SEC]    = "#24213B",
+    [COLOR_SURFACE_ELEV]   = "#302A4B",
+    [COLOR_FG_MAIN]        = "#E8E7F2",
+    [COLOR_FG_SEC]         = "#A9A6C4",
+    [COLOR_PRIMARY_VIOLET] = "#A78BFA",
+    [COLOR_ELECTRIC_CYAN]  = "#22D3EE",
+    [COLOR_NEON_PINK]      = "#F472B6",
+    [COLOR_SOFT_GREEN]     = "#A6E3A1",
+    [COLOR_WARM_ORANGE]    = "#FAB387",
+    [COLOR_ERROR_RED]      = "#F38BA8",
+    [COLOR_BORDER]         = "#484064",
+    [COLOR_SELECTION]      = "#40375F",
+    [COLOR_CURSOR]         = "#F0ABFC",
+    [COLOR_BLUE_ACCENT]    = "#60A5FA"
 };
 
 static unsigned long allocate_hex_color(Display *dpy, int screen, const char *hex) {
@@ -46,12 +47,14 @@ static unsigned long allocate_hex_color(Display *dpy, int screen, const char *he
 }
 
 static const char *preferred_fonts[] = {
-    "-*-jetbrains mono-medium-r-*-*-14-*-*-*-m-*-*-*",
-    "-*-dejavu sans mono-medium-r-*-*-14-*-*-*-m-*-*-*",
-    "-*-liberation mono-medium-r-*-*-14-*-*-*-m-*-*-*",
-    "-*-ubuntu mono-medium-r-*-*-14-*-*-*-m-*-*-*",
+    "-*-dejavu sans mono-medium-r-normal--14-*-*-*-m-*-*-*",
+    "-*-liberation mono-medium-r-normal--14-*-*-*-m-*-*-*",
+    "-*-ubuntu mono-medium-r-normal--14-*-*-*-m-*-*-*",
+    "-misc-fixed-medium-r-normal--15-140-75-75-c-90-iso8859-1",
     "-misc-fixed-medium-r-normal--14-130-75-75-c-70-iso8859-1",
+    "-*-courier-medium-r-normal--14-*-*-*-m-*-*-*",
     "9x15",
+    "8x13",
     "fixed"
 };
 
@@ -67,10 +70,10 @@ bool theme_init(Display *dpy, int screen, Theme *theme) {
         }
     }
 
-    theme->top_bar_height = 36;
-    theme->status_bar_height = 24;
-    theme->padding_x = 14;
-    theme->padding_y = 10;
+    theme->top_bar_height = 38;
+    theme->status_bar_height = 26;
+    theme->padding_x = 18;
+    theme->padding_y = 12;
 
     if (!dpy) {
         theme->font = NULL;
@@ -90,7 +93,6 @@ bool theme_init(Display *dpy, int screen, Theme *theme) {
     }
 
     if (!theme->font) {
-        fprintf(stderr, "terminator: warning: failed to load preferred fonts, attempting 'fixed'\n");
         theme->font = XLoadQueryFont(dpy, "fixed");
     }
 
@@ -98,15 +100,12 @@ bool theme_init(Display *dpy, int screen, Theme *theme) {
         theme->font_ascent = theme->font->ascent;
         theme->font_descent = theme->font->descent;
         theme->font_height = theme->font_ascent + theme->font_descent;
-        theme->font_width = XTextWidth(theme->font, "W", 1);
-        if (theme->font_width <= 0) {
-            theme->font_width = theme->font->max_bounds.width;
-        }
+        int w_m = XTextWidth(theme->font, "M", 1);
+        theme->font_width = (w_m > 0) ? w_m : theme->font->max_bounds.width;
         if (theme->font_width <= 0) {
             theme->font_width = 8;
         }
     } else {
-        fprintf(stderr, "terminator: error: cannot load any X11 font\n");
         theme->font_width = 8;
         theme->font_height = 16;
         theme->font_ascent = 12;

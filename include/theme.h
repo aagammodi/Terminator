@@ -19,6 +19,7 @@ typedef enum {
     COLOR_BORDER,
     COLOR_SELECTION,
     COLOR_CURSOR,
+    COLOR_BLUE_ACCENT,
     COLOR_COUNT
 } ThemeColorIndex;
 

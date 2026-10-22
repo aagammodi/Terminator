@@ -11,10 +11,10 @@ It features a custom-built GUI window, genuine shell lexer and parser, process o
 ### Task 1 — X11 GUI & Terminal Interaction
 - **Native Xlib Window**: Built directly with `XOpenDisplay`, `XCreateWindow`, `XMapWindow`, `XSelectInput`, `XNextEvent`, and `XDrawString`.
 - **Double-Buffered Rendering**: Smooth rendering via an off-screen `Pixmap` back-buffer, preventing flicker during typing and rapid output streaming.
-- **Neon Aurora Theme**: Bespoke visual palette (#1A1930 dark background, #25233D secondary surfaces, #7C3AED violet accents, #22D3EE electric cyan highlights, #F472B6 neon pink prompts, #A6E3A1 soft green status indicators).
-- **Interactive Top Bar & Tab Strip**: Distinct application branding, active tab card `[ 1: ~/dir ]` with glowing violet underline, and a `[ + ]` add-tab affordance.
+- **Neon Aurora Theme**: Bespoke visual palette (#19172B rich dark background, #24213B secondary surface, #302A4B elevated tab cards, #A78BFA purple accents, #22D3EE bright turquoise/cyan prompts, #F472B6 neon pink user badges, #60A5FA blue directory accents, #A6E3A1 soft green status indicators, #F0ABFC cursor).
+- **Interactive Top Bar & Tab Strip**: Distinct application branding, active tab card `[ 1: ~/dir ]` with glowing violet underline and text truncation ellipses (`...`) preventing any overlap, and an independent `[ + ]` add-tab affordance.
 - **Status Area**: Subtle bottom status bar showing tab ID, compact current working directory, previous exit status `$?`, and line count.
-- **Full Line Editor**: Real-time character insertion, Backspace, Delete, Left/Right arrow cursor movement, Home, End, Ctrl+A, Ctrl+E, Ctrl+U (delete to start), Ctrl+K (delete to end), Ctrl+W (delete word backward), and Ctrl+L (clear screen).
+- **Full Line Editor & Single-Prompt Invariant**: Real-time character insertion, Backspace, Delete, Left/Right arrow cursor movement, Home, End, Ctrl+A, Ctrl+E, Ctrl+U (delete to start), Ctrl+K (delete to end), Ctrl+W (delete word backward), and Ctrl+L (clear screen). Enforces an explicit `ShellState` lifecycle guaranteeing exactly one active prompt at any time without phantom duplicates.
 - **Responsive poll() Event Loop**: Non-blocking multiplexing between the X11 connection (`ConnectionNumber(dpy)`) and child command output pipe(s). Window never freezes on long-running commands or commands without output.
 - **Scrollback Buffer**: Dynamic line storage up to 10,000 lines, scrollable via PageUp / PageDown and mouse wheel (Button4 / Button5), with a proportional scrollbar indicator and automatic return-to-bottom on new input.
 
@@ -22,6 +22,7 @@ It features a custom-built GUI window, genuine shell lexer and parser, process o
 - **External Commands**: Executed via `fork()` + `execvp()`. When a command is not found, displays `terminator: <cmd>: command not found` and sets exit code 127 without crashing the GUI.
 - **cd Built-in**: Changes the directory of the shell process itself using `chdir()`. Supports `cd` (HOME), `cd ~`, `cd ~/path`, absolute and relative paths, gracefully reports errors on missing directories, and updates the prompt.
 - **pwd Built-in**: Prints current working directory from `getcwd()`.
+- **clear Built-in & ANSI CSI Parser**: Implements `clear` as a native shell built-in to immediately reset visible terminal output, and integrates an ANSI CSI escape-sequence parser supporting `\033[2J`, `\033[3J`, cursor positioning, and SGR sequences so external tools never produce raw escape codes like `^[[H^[[2J`.
 - **exit Built-in**: Cleanly shuts down the shell and closes the GUI.
 - **history Built-in**: Displays recent numbered commands from in-memory history.
 - **Reserved Built-in Stubs**: Dispatch interface and informative stubs for `multiWatch`, `jobs`, `fg`, `bg`, and `source` reserved for Tasks 6–11.

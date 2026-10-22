@@ -12,6 +12,19 @@ typedef enum {
     LINE_TYPE_INFO
 } LineType;
 
+typedef enum {
+    SHELL_STATE_READY = 0,        /* Ready for interactive input */
+    SHELL_STATE_CONTINUATION,     /* Collecting multiline continuation */
+    SHELL_STATE_RUNNING           /* Command submitted and currently executing */
+} ShellState;
+
+typedef enum {
+    ANSI_STATE_NORMAL = 0,
+    ANSI_STATE_ESC,
+    ANSI_STATE_CSI,
+    ANSI_STATE_OSC
+} AnsiState;
+
 typedef struct {
     char *text;
     LineType type;
@@ -20,6 +33,7 @@ typedef struct {
 typedef struct Tab {
     int id;
     char cwd[MAX_PATH_LEN];
+    ShellState state;
     
     /* Input buffer and cursor */
     char input[MAX_INPUT_LEN];
@@ -37,6 +51,11 @@ typedef struct Tab {
     /* Partial line buffer for incremental stream reading */
     char partial_line[MAX_INPUT_LEN];
     int partial_len;
+    
+    /* ANSI escape sequence parser state */
+    AnsiState ansi_state;
+    char csi_buf[64];
+    int csi_len;
     
     /* View / scrolling */
     int scroll_offset; /* 0 = bottom, >0 = scrolled up into history */

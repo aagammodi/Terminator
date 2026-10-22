@@ -132,34 +132,68 @@ void gui_redraw(GUI *gui) {
     fill_rect(gui, 0, 0, w, bar_h, theme_color(t, COLOR_SURFACE_SEC));
     draw_line(gui, 0, bar_h - 1, w, bar_h - 1, theme_color(t, COLOR_BORDER));
 
-    /* Logo / Identity */
+    /* Logo / Identity in dedicated region */
     const char *title = "TERMINATOR";
-    int text_y = (bar_h / 2) + (t->font_ascent / 2) - 1;
-    draw_text(gui, 16, text_y, title, theme_color(t, COLOR_ELECTRIC_CYAN));
+    int title_len = (int)strlen(title);
+    int title_text_w = title_len * t->font_width;
+    int brand_pad_x = 16;
+    int brand_y = 6;
+    int brand_h = bar_h - 12;
+    int brand_w = title_text_w + 24;
 
-    /* Tab 1 Pill: [ 1: ~/dir ] */
-    int tab_x = 130;
-    int tab_y = 5;
-    int tab_w = 200;
-    int tab_h = bar_h - 10;
+    fill_rect(gui, brand_pad_x, brand_y, brand_w, brand_h, theme_color(t, COLOR_SURFACE_ELEV));
+    draw_rect(gui, brand_pad_x, brand_y, brand_w, brand_h, theme_color(t, COLOR_BORDER));
+    int text_y = brand_y + (brand_h / 2) + (t->font_ascent / 2) - 1;
+    draw_text(gui, brand_pad_x + 12, text_y, title, theme_color(t, COLOR_ELECTRIC_CYAN));
+
+    /* Tab 1 Card */
+    int tab_x = brand_pad_x + brand_w + 12;
+    int add_w = 28;
+    int add_margin = 8;
+    int right_margin = 16;
+
+    int max_tab_w = 240;
+    int avail_tab_space = w - tab_x - add_w - add_margin - right_margin;
+    int tab_w = (avail_tab_space < max_tab_w) ? avail_tab_space : max_tab_w;
+    if (tab_w < 80) tab_w = 80;
+
+    int tab_y = brand_y;
+    int tab_h = brand_h;
+
     fill_rect(gui, tab_x, tab_y, tab_w, tab_h, theme_color(t, COLOR_SURFACE_ELEV));
     draw_rect(gui, tab_x, tab_y, tab_w, tab_h, theme_color(t, COLOR_BORDER));
+
+    /* Prominent active-tab accent line */
+    fill_rect(gui, tab_x, tab_y + tab_h - 2, tab_w, 2, theme_color(t, COLOR_PRIMARY_VIOLET));
 
     char compact_cwd[MAX_PATH_LEN];
     path_compact_home(tab->cwd, compact_cwd, sizeof(compact_cwd));
     char tab_label[MAX_PATH_LEN + 32];
     snprintf(tab_label, sizeof(tab_label), "1: %s", compact_cwd);
-    draw_text(gui, tab_x + 10, tab_y + (tab_h / 2) + (t->font_ascent / 2) - 1, tab_label, theme_color(t, COLOR_FG_MAIN));
 
-    /* Prominent active-tab accent line */
-    fill_rect(gui, tab_x, tab_y + tab_h - 2, tab_w, 2, theme_color(t, COLOR_PRIMARY_VIOLET));
+    /* Text truncation with ellipsis */
+    int label_pad_x = 12;
+    int max_text_chars = (tab_w - (label_pad_x * 2)) / (t->font_width > 0 ? t->font_width : 8);
+    if (max_text_chars < 3) max_text_chars = 3;
+    char display_label[256];
+    safe_strncpy(display_label, tab_label, sizeof(display_label));
+    if ((int)strlen(display_label) > max_text_chars) {
+        if (max_text_chars > 3) {
+            display_label[max_text_chars - 3] = '\0';
+            strcat(display_label, "...");
+        } else {
+            display_label[max_text_chars] = '\0';
+        }
+    }
 
-    /* Add-tab affordance [ + ] */
-    int add_x = tab_x + tab_w + 6;
-    int add_w = 26;
+    draw_text(gui, tab_x + label_pad_x, text_y, display_label, theme_color(t, COLOR_FG_MAIN));
+
+    /* Add-tab affordance [ + ] in separate, non-overlapping box */
+    int add_x = tab_x + tab_w + add_margin;
     fill_rect(gui, add_x, tab_y, add_w, tab_h, theme_color(t, COLOR_SURFACE_ELEV));
     draw_rect(gui, add_x, tab_y, add_w, tab_h, theme_color(t, COLOR_BORDER));
-    draw_text(gui, add_x + 8, tab_y + (tab_h / 2) + (t->font_ascent / 2) - 1, "+", theme_color(t, COLOR_FG_SEC));
+    int plus_x = add_x + (add_w - t->font_width) / 2;
+    draw_text(gui, plus_x, text_y, "+", theme_color(t, COLOR_ELECTRIC_CYAN));
 
     /* 3. Render Status Bar */
     int stat_h = t->status_bar_height;
@@ -167,23 +201,38 @@ void gui_redraw(GUI *gui) {
     fill_rect(gui, 0, stat_y, w, stat_h, theme_color(t, COLOR_SURFACE_SEC));
     draw_line(gui, 0, stat_y, w, stat_y, theme_color(t, COLOR_BORDER));
 
-    char stat_text[MAX_PATH_LEN + 128];
-    snprintf(stat_text, sizeof(stat_text), "[TAB 1]  CWD: %s   $? = %d   |   MODE: Thread (Default)   |   LINES: %d",
-             compact_cwd, tab->last_exit_status, tab->num_lines);
-    draw_text(gui, 16, stat_y + (stat_h / 2) + (t->font_ascent / 2) - 1, stat_text, theme_color(t, COLOR_FG_SEC));
+    int stat_text_y = stat_y + (stat_h / 2) + (t->font_ascent / 2) - 1;
+    int sx = 16;
+    draw_text(gui, sx, stat_text_y, "[TAB 1]", theme_color(t, COLOR_PRIMARY_VIOLET));
+    sx += 8 * t->font_width;
+
+    char cwd_str[MAX_PATH_LEN + 32];
+    snprintf(cwd_str, sizeof(cwd_str), "CWD: %s", compact_cwd);
+    draw_text(gui, sx, stat_text_y, cwd_str, theme_color(t, COLOR_BLUE_ACCENT));
+    sx += ((int)strlen(cwd_str) + 2) * t->font_width;
+
+    char exit_str[32];
+    snprintf(exit_str, sizeof(exit_str), "EXIT: %d", tab->last_exit_status);
+    unsigned long exit_color = (tab->last_exit_status == 0) ? theme_color(t, COLOR_SOFT_GREEN) : theme_color(t, COLOR_ERROR_RED);
+    draw_text(gui, sx, stat_text_y, exit_str, exit_color);
+    sx += ((int)strlen(exit_str) + 2) * t->font_width;
+
+    char info_str[64];
+    snprintf(info_str, sizeof(info_str), "LINES: %d", tab->num_lines);
+    draw_text(gui, sx, stat_text_y, info_str, theme_color(t, COLOR_FG_SEC));
 
     /* 4. Render Terminal Scrollback & Input */
     int term_top = bar_h + t->padding_y;
     int term_bottom = stat_y - t->padding_y;
     int term_height = term_bottom - term_top;
-    int line_h = t->font_height + 3;
-    if (line_h < 12) line_h = 16;
+    int line_h = t->font_height + 6;
+    if (line_h < 14) line_h = 18;
     int visible_rows = term_height / line_h;
     if (visible_rows <= 0) visible_rows = 1;
 
     /* Total available rows includes history lines + current input row (if not running) */
     int total_rows = tab->num_lines;
-    bool show_input_row = (tab->out_pipe_fd < 0);
+    bool show_input_row = (tab->state != SHELL_STATE_RUNNING);
     if (show_input_row) {
         total_rows++;
     }
@@ -197,31 +246,58 @@ void gui_redraw(GUI *gui) {
         if (r < tab->num_lines) {
             /* Historical line */
             TerminalLine *tl = &tab->lines[r];
-            unsigned long color = theme_color(t, COLOR_FG_MAIN);
 
             if (tl->type == LINE_TYPE_PROMPT) {
-                color = theme_color(t, COLOR_ELECTRIC_CYAN);
+                char *arrow = strstr(tl->text, "> ");
+                if (arrow) {
+                    size_t pfx_len = (arrow - tl->text) + 2;
+                    char pfx[256];
+                    if (pfx_len < sizeof(pfx)) {
+                        memcpy(pfx, tl->text, pfx_len);
+                        pfx[pfx_len] = '\0';
+                        draw_text(gui, t->padding_x, render_y, pfx, theme_color(t, COLOR_ELECTRIC_CYAN));
+                        int cmd_x = t->padding_x + ((int)pfx_len * t->font_width);
+                        draw_text(gui, cmd_x, render_y, tl->text + pfx_len, theme_color(t, COLOR_FG_MAIN));
+                    } else {
+                        draw_text(gui, t->padding_x, render_y, tl->text, theme_color(t, COLOR_ELECTRIC_CYAN));
+                    }
+                } else {
+                    draw_text(gui, t->padding_x, render_y, tl->text, theme_color(t, COLOR_ELECTRIC_CYAN));
+                }
             } else if (tl->type == LINE_TYPE_CONTINUATION) {
-                color = theme_color(t, COLOR_WARM_ORANGE);
+                draw_text(gui, t->padding_x, render_y, "> ", theme_color(t, COLOR_WARM_ORANGE));
+                int cmd_x = t->padding_x + (2 * t->font_width);
+                draw_text(gui, cmd_x, render_y, tl->text + (strncmp(tl->text, "> ", 2) == 0 ? 2 : 0), theme_color(t, COLOR_FG_MAIN));
             } else if (tl->type == LINE_TYPE_ERROR) {
-                color = theme_color(t, COLOR_ERROR_RED);
+                draw_text(gui, t->padding_x, render_y, tl->text, theme_color(t, COLOR_ERROR_RED));
+            } else {
+                draw_text(gui, t->padding_x, render_y, tl->text, theme_color(t, COLOR_FG_MAIN));
             }
-
-            draw_text(gui, t->padding_x, render_y, tl->text, color);
         } else if (show_input_row) {
             /* Active typed command line */
-            char prompt_buf[MAX_INPUT_LEN];
-            shell_format_prompt(tab, prompt_buf, sizeof(prompt_buf));
-            int prompt_len = (int)strlen(prompt_buf);
+            int curr_x = t->padding_x;
 
-            unsigned long pcolor = tab->in_continuation ? theme_color(t, COLOR_WARM_ORANGE) : theme_color(t, COLOR_SOFT_GREEN);
-            draw_text(gui, t->padding_x, render_y, prompt_buf, pcolor);
+            if (tab->state == SHELL_STATE_CONTINUATION) {
+                draw_text(gui, curr_x, render_y, "> ", theme_color(t, COLOR_WARM_ORANGE));
+                curr_x += 2 * t->font_width;
+            } else {
+                /* Vivid Cyan / Purple prompt */
+                const char *user = getenv("USER");
+                if (!user || user[0] == '\0') user = "user";
+                draw_text(gui, curr_x, render_y, user, theme_color(t, COLOR_NEON_PINK));
+                curr_x += (int)strlen(user) * t->font_width;
 
-            int input_x = t->padding_x + (prompt_len * t->font_width);
-            draw_text(gui, input_x, render_y, tab->input, theme_color(t, COLOR_FG_MAIN));
+                draw_text(gui, curr_x, render_y, "@terminator", theme_color(t, COLOR_PRIMARY_VIOLET));
+                curr_x += 11 * t->font_width;
+
+                draw_text(gui, curr_x, render_y, "> ", theme_color(t, COLOR_ELECTRIC_CYAN));
+                curr_x += 2 * t->font_width;
+            }
+
+            draw_text(gui, curr_x, render_y, tab->input, theme_color(t, COLOR_FG_MAIN));
 
             /* Draw Cursor */
-            int cursor_x = input_x + (tab->cursor * t->font_width);
+            int cursor_x = curr_x + (tab->cursor * t->font_width);
             int cursor_y = render_y - t->font_ascent;
             fill_rect(gui, cursor_x, cursor_y, t->font_width, t->font_height, theme_color(t, COLOR_CURSOR));
 
@@ -338,6 +414,7 @@ void gui_run_event_loop(GUI *gui) {
                     close(tab->out_pipe_fd);
                     tab->out_pipe_fd = -1;
                     executor_reap_children(tab);
+                    tab->state = SHELL_STATE_READY;
                     terminal_show_prompt(tab);
                     gui->needs_redraw = true;
                 }
@@ -345,6 +422,7 @@ void gui_run_event_loop(GUI *gui) {
         } else if (tab && tab->running_pid > 0 && tab->out_pipe_fd < 0) {
             /* Child exited without pipe */
             executor_reap_children(tab);
+            tab->state = SHELL_STATE_READY;
             terminal_show_prompt(tab);
             gui->needs_redraw = true;
         }

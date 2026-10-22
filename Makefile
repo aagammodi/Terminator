@@ -39,6 +39,7 @@ test: $(BIN)
 	@bash tests/test_redirection.sh
 	@bash tests/test_pipelines.sh
 	@bash tests/test_multiline.sh
+	@python3 tests/test_ui_and_lifecycle.py
 	@echo "All automated tests completed successfully!"
 
 clean:

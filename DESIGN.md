@@ -92,9 +92,16 @@ int pret = poll(fds, nfds, 50); /* 50ms responsive tick */
 The tab data structure represents an isolated shell and terminal instance:
 
 ```c
+typedef enum {
+    SHELL_STATE_READY = 0,             /* Ready for input, prompt active */
+    SHELL_STATE_CONTINUATION,          /* Incomplete multiline input */
+    SHELL_STATE_RUNNING                /* Command currently executing */
+} ShellState;
+
 typedef struct Tab {
     int id;                             /* Tab identifier (1, 2, ...) */
     char cwd[MAX_PATH_LEN];             /* Current working directory */
+    ShellState state;                   /* Explicit lifecycle state */
     
     /* Input line and cursor */
     char input[MAX_INPUT_LEN];          /* Active line being edited */
@@ -112,6 +119,11 @@ typedef struct Tab {
     /* Incremental stream parser */
     char partial_line[MAX_INPUT_LEN];   /* Partial line received from pipe */
     int partial_len;                    /* Current bytes in partial line */
+    
+    /* ANSI CSI escape-sequence parser */
+    AnsiState ansi_state;
+    char csi_buf[64];
+    int csi_len;
     
     /* View / Scrolling */
     int scroll_offset;                  /* Lines scrolled back from bottom */

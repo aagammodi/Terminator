@@ -42,6 +42,7 @@ void input_handle_key_event(XKeyEvent *event, Shell *shell, bool *needs_redraw) 
                 terminal_clear_input(tab);
                 tab->accumulated_cmd[0] = '\0';
                 tab->in_continuation = false;
+                tab->state = SHELL_STATE_READY;
                 terminal_show_prompt(tab);
             }
             return;
@@ -50,6 +51,7 @@ void input_handle_key_event(XKeyEvent *event, Shell *shell, bool *needs_redraw) 
         if (ksym == XK_l || ksym == XK_L) {
             /* Ctrl+L: Clear screen */
             terminal_clear_screen(tab);
+            tab->state = SHELL_STATE_READY;
             terminal_show_prompt(tab);
             return;
         }
@@ -98,7 +100,7 @@ void input_handle_key_event(XKeyEvent *event, Shell *shell, bool *needs_redraw) 
         case XK_Return:
         case XK_KP_Enter: {
             /* If a foreground command is still running, ignore enter or buffer it */
-            if (tab->out_pipe_fd >= 0) {
+            if (tab->state == SHELL_STATE_RUNNING || tab->out_pipe_fd >= 0) {
                 return;
             }
 
@@ -107,7 +109,7 @@ void input_handle_key_event(XKeyEvent *event, Shell *shell, bool *needs_redraw) 
             shell_format_prompt(tab, prompt_buf, sizeof(prompt_buf));
             char full_line[MAX_INPUT_LEN * 2];
             snprintf(full_line, sizeof(full_line), "%s%s", prompt_buf, tab->input);
-            terminal_append_line(tab, full_line, tab->in_continuation ? LINE_TYPE_CONTINUATION : LINE_TYPE_PROMPT);
+            terminal_append_line(tab, full_line, (tab->state == SHELL_STATE_CONTINUATION) ? LINE_TYPE_CONTINUATION : LINE_TYPE_PROMPT);
 
             /* Check multiline logic */
             size_t input_len = strlen(tab->input);
@@ -123,7 +125,7 @@ void input_handle_key_event(XKeyEvent *event, Shell *shell, bool *needs_redraw) 
                 }
             }
 
-            if (tab->in_continuation) {
+            if (tab->state == SHELL_STATE_CONTINUATION) {
                 /* Append to accumulated command */
                 size_t acc_len = strlen(tab->accumulated_cmd);
                 if (trailing_backslash) {
@@ -138,6 +140,7 @@ void input_handle_key_event(XKeyEvent *event, Shell *shell, bool *needs_redraw) 
                     tab->input[input_len - 1] = '\0';
                     safe_strncpy(tab->accumulated_cmd, tab->input, sizeof(tab->accumulated_cmd));
                     tab->in_continuation = true;
+                    tab->state = SHELL_STATE_CONTINUATION;
                 } else {
                     safe_strncpy(tab->accumulated_cmd, tab->input, sizeof(tab->accumulated_cmd));
                 }
@@ -146,11 +149,13 @@ void input_handle_key_event(XKeyEvent *event, Shell *shell, bool *needs_redraw) 
             /* Check if accumulated command is complete */
             if (trailing_backslash || parser_is_incomplete(tab->accumulated_cmd)) {
                 tab->in_continuation = true;
+                tab->state = SHELL_STATE_CONTINUATION;
                 terminal_clear_input(tab);
                 terminal_show_prompt(tab);
             } else {
                 /* Command is complete: execute it */
                 tab->in_continuation = false;
+                tab->state = SHELL_STATE_RUNNING;
                 terminal_clear_input(tab);
 
                 char exec_cmd[MAX_CMD_LEN];
@@ -159,8 +164,9 @@ void input_handle_key_event(XKeyEvent *event, Shell *shell, bool *needs_redraw) 
 
                 executor_run_line(tab, exec_cmd);
 
-                /* If built-in completed synchronously, show prompt immediately */
+                /* If built-in completed synchronously, return to ready state immediately */
                 if (tab->out_pipe_fd < 0) {
+                    tab->state = SHELL_STATE_READY;
                     terminal_show_prompt(tab);
                 }
             }

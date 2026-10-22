@@ -8,6 +8,7 @@ bool builtin_is_builtin(const char *name) {
     if (!name) return false;
     return (strcmp(name, "cd") == 0 ||
             strcmp(name, "pwd") == 0 ||
+            strcmp(name, "clear") == 0 ||
             strcmp(name, "exit") == 0 ||
             strcmp(name, "history") == 0 ||
             strcmp(name, "multiWatch") == 0 ||
@@ -60,6 +61,12 @@ static int builtin_pwd(const Command *cmd, Tab *tab) {
     return 0;
 }
 
+static int builtin_clear(const Command *cmd, Tab *tab) {
+    (void)cmd;
+    terminal_clear_screen(tab);
+    return 0;
+}
+
 static int builtin_exit(const Command *cmd, Tab *tab) {
     (void)cmd;
     (void)tab;
@@ -84,6 +91,8 @@ int builtin_execute(const Command *cmd, Tab *tab) {
         return builtin_cd(cmd, tab);
     } else if (strcmp(name, "pwd") == 0) {
         return builtin_pwd(cmd, tab);
+    } else if (strcmp(name, "clear") == 0) {
+        return builtin_clear(cmd, tab);
     } else if (strcmp(name, "exit") == 0) {
         return builtin_exit(cmd, tab);
     } else if (strcmp(name, "history") == 0) {

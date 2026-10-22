@@ -41,6 +41,10 @@ Tab *terminal_tab_create(int id, const char *initial_dir) {
     tab->history_index = -1;
     tab->saved_draft[0] = '\0';
     tab->echo_to_stdout = false;
+    tab->state = SHELL_STATE_READY;
+    tab->ansi_state = ANSI_STATE_NORMAL;
+    tab->csi_len = 0;
+    tab->csi_buf[0] = '\0';
 
     return tab;
 }
@@ -235,41 +239,105 @@ void terminal_append_line(Tab *tab, const char *text, LineType type) {
     }
 }
 
+static inline void safe_write_bytes(int fd, const char *buf, size_t len) {
+    ssize_t written = 0;
+    while (written < (ssize_t)len) {
+        ssize_t w = write(fd, buf + written, len - written);
+        if (w <= 0) break;
+        written += w;
+    }
+}
+
 void terminal_append_output_bytes(Tab *tab, const char *bytes, size_t len, bool is_error) {
     if (!tab || !bytes || len == 0) return;
 
-    if (tab->echo_to_stdout) {
-        ssize_t written = 0;
-        int target_fd = is_error ? STDERR_FILENO : STDOUT_FILENO;
-        while (written < (ssize_t)len) {
-            ssize_t w = write(target_fd, bytes + written, len - written);
-            if (w <= 0) break;
-            written += w;
-        }
-    }
-
     LineType line_type = is_error ? LINE_TYPE_ERROR : LINE_TYPE_OUTPUT;
+    int target_fd = is_error ? STDERR_FILENO : STDOUT_FILENO;
 
     for (size_t i = 0; i < len; i++) {
         char c = bytes[i];
-        if (c == '\n') {
-            tab->partial_line[tab->partial_len] = '\0';
-            terminal_append_line(tab, tab->partial_line, line_type);
-            tab->partial_len = 0;
-            tab->partial_line[0] = '\0';
-        } else if (c == '\r') {
-            /* Ignore bare carriage returns */
-            continue;
-        } else {
-            if ((size_t)tab->partial_len + 1 < sizeof(tab->partial_line)) {
-                tab->partial_line[tab->partial_len++] = c;
-            } else {
-                /* Line buffer full, flush current segment */
-                tab->partial_line[tab->partial_len] = '\0';
-                terminal_append_line(tab, tab->partial_line, line_type);
-                tab->partial_len = 0;
-                tab->partial_line[tab->partial_len++] = c;
-            }
+
+        switch (tab->ansi_state) {
+            case ANSI_STATE_NORMAL:
+                if (c == 0x1B) {
+                    tab->ansi_state = ANSI_STATE_ESC;
+                } else if (c == '\n') {
+                    tab->partial_line[tab->partial_len] = '\0';
+                    terminal_append_line(tab, tab->partial_line, line_type);
+                    if (tab->echo_to_stdout) {
+                        safe_write_bytes(target_fd, "\n", 1);
+                    }
+                    tab->partial_len = 0;
+                    tab->partial_line[0] = '\0';
+                } else if (c == '\r') {
+                    /* Ignore carriage returns */
+                    continue;
+                } else if (c == '\b') {
+                    if (tab->partial_len > 0) {
+                        tab->partial_len--;
+                        tab->partial_line[tab->partial_len] = '\0';
+                    }
+                } else if ((unsigned char)c >= 32 || c == '\t') {
+                    if (tab->echo_to_stdout) {
+                        safe_write_bytes(target_fd, &c, 1);
+                    }
+                    if ((size_t)tab->partial_len + 1 < sizeof(tab->partial_line)) {
+                        tab->partial_line[tab->partial_len++] = c;
+                    } else {
+                        /* Line buffer full, flush current segment */
+                        tab->partial_line[tab->partial_len] = '\0';
+                        terminal_append_line(tab, tab->partial_line, line_type);
+                        tab->partial_len = 0;
+                        tab->partial_line[tab->partial_len++] = c;
+                    }
+                }
+                break;
+
+            case ANSI_STATE_ESC:
+                if (c == '[') {
+                    tab->ansi_state = ANSI_STATE_CSI;
+                    tab->csi_len = 0;
+                    tab->csi_buf[0] = '\0';
+                } else if (c == ']') {
+                    tab->ansi_state = ANSI_STATE_OSC;
+                } else {
+                    tab->ansi_state = ANSI_STATE_NORMAL;
+                }
+                break;
+
+            case ANSI_STATE_CSI:
+                if ((c >= '0' && c <= '9') || c == ';' || c == '?' || c == ' ') {
+                    if (tab->csi_len < (int)sizeof(tab->csi_buf) - 1) {
+                        tab->csi_buf[tab->csi_len++] = c;
+                        tab->csi_buf[tab->csi_len] = '\0';
+                    }
+                } else if (c >= 0x40 && c <= 0x7E) {
+                    /* Final character of CSI sequence */
+                    if (c == 'J') {
+                        /* Erase in Display: 2J (screen), 3J (scrollback) */
+                        if (strstr(tab->csi_buf, "2") || strstr(tab->csi_buf, "3") || tab->csi_len == 0) {
+                            terminal_clear_screen(tab);
+                        }
+                    } else if (c == 'H' || c == 'f') {
+                        /* Cursor Home */
+                        tab->scroll_offset = 0;
+                    } else if (c == 'K') {
+                        /* Erase in Line */
+                        tab->partial_len = 0;
+                        tab->partial_line[0] = '\0';
+                    }
+                    /* End of CSI sequence */
+                    tab->ansi_state = ANSI_STATE_NORMAL;
+                } else {
+                    tab->ansi_state = ANSI_STATE_NORMAL;
+                }
+                break;
+
+            case ANSI_STATE_OSC:
+                if (c == 0x07 || c == 0x1B) {
+                    tab->ansi_state = ANSI_STATE_NORMAL;
+                }
+                break;
         }
     }
 }
@@ -294,6 +362,9 @@ void terminal_clear_screen(Tab *tab) {
     tab->scroll_offset = 0;
     tab->partial_len = 0;
     tab->partial_line[0] = '\0';
+    tab->ansi_state = ANSI_STATE_NORMAL;
+    tab->csi_len = 0;
+    tab->csi_buf[0] = '\0';
 }
 
 void terminal_scroll_up(Tab *tab, int lines) {
@@ -320,9 +391,5 @@ void terminal_scroll_to_bottom(Tab *tab) {
 void terminal_show_prompt(Tab *tab) {
     if (!tab) return;
     terminal_flush_partial_line(tab, false);
-    
-    char prompt_buf[MAX_INPUT_LEN];
-    shell_format_prompt(tab, prompt_buf, sizeof(prompt_buf));
-    terminal_append_line(tab, prompt_buf, LINE_TYPE_PROMPT);
     terminal_scroll_to_bottom(tab);
 }

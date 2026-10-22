@@ -1,5 +1,5 @@
 CC ?= gcc
-CFLAGS ?= -std=c11 -Wall -Wextra -Wpedantic -O2 -Iinclude -pthread
+CFLAGS ?= -std=c11 -Wall -Wextra -Wpedantic -O2 -Iinclude -pthread -MMD -MP
 LDFLAGS ?= -pthread -lrt
 
 # X11 flags
@@ -40,6 +40,8 @@ $(TEST_MODES_BIN): tests/test_modes_and_scrollbar.c $(OBJS_NO_MAIN)
 $(OBJ_DIR)/%.o: $(SRC_DIR)/%.c | $(OBJ_DIR)
 	$(CC) $(CFLAGS) -c $< -o $@
 
+-include $(wildcard $(OBJ_DIR)/*.d)
+
 $(OBJ_DIR):
 	mkdir -p $(OBJ_DIR)
 
@@ -55,5 +57,5 @@ test: $(BIN) $(TEST_TABS_BIN) $(TEST_MODES_BIN)
 	@echo "All automated tests completed successfully!"
 
 clean:
-	rm -rf $(OBJ_DIR) $(BIN) $(TEST_TABS_BIN) $(TEST_MODES_BIN) *.o
+	rm -rf $(OBJ_DIR) $(BIN) $(TEST_TABS_BIN) $(TEST_MODES_BIN) *.o *.d tests/*.d
 	rm -f tests/*.tmp tests/out*.txt tests/res*.txt tests/sort*.txt

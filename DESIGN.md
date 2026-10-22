@@ -201,3 +201,45 @@ The event loop in `gui_run_event_loop()` uses POSIX `poll()` without busy-waitin
 3. Parent closes all $2 \times (N-1)$ pipe descriptors immediately to prevent EOF deadlocks.
 4. Output is streamed incrementally through `capture_pipe` to prevent kernel pipe buffer deadlock on large outputs (verified with 1MB+ streams).
 5. `waitpid()` reaps all child processes and records the exit status of command $N-1$ into `tab->last_exit_status`.
+
+---
+
+## 8. Process Group Management, Signal Routing & Hang-Free Shutdown (e.g. `geany`, long-running tasks)
+
+### Process Group Separation (`setpgid`)
+Every launched command or pipeline is placed in its own process group (`first_pgid = pid` of first stage; all stages join `first_pgid`). This isolates child processes from Terminator's main GUI process and tab worker threads.
+
+### Non-Blocking Worker Multiplexing (`poll`)
+Previously, worker loops blocked on `read(out_pipe_fd)`. When running graphical applications like `geany` or commands without immediate output, the worker was unable to process incoming IPC messages, ignoring `Ctrl+C` and causing GUI hangs on exit.
+
+The revised architecture uses `poll()` in `executor_run_line_worker()` watching:
+- `read_ipc_fd` (`to_worker_pipe[0]`): For `IPC_MSG_INT` (Ctrl+C) and `IPC_MSG_QUIT` (shutdown).
+- `tab->out_pipe_fd`: For output streaming from child processes.
+- Non-blocking checks via `waitpid(..., WNOHANG)` every 20ms.
+
+### Clean Ctrl+C Handling
+When the user presses `Ctrl+C`:
+1. If a foreground command is running, the GUI sends `SIGINT` directly to `tab->foreground_pgid` and sends `IPC_MSG_INT` through the worker pipe.
+2. The child process group receives `SIGINT` and terminates cleanly.
+3. The worker reaps the child, records its exit status, and sends `IPC_MSG_PROMPT` back to the GUI.
+4. The terminal restores the standard prompt. Unrelated tabs and Terminator itself remain completely unaffected.
+
+### Responsive Window Close & Tab Destruction
+When closing a tab (`shell_close_tab`) or closing the window (`shell_destroy`):
+1. Terminator delivers `SIGTERM` and `SIGKILL` to `tab->foreground_pgid` and all pipeline PIDs **before** joining worker threads.
+2. It sends `IPC_MSG_QUIT` and closes the worker pipes.
+3. It joins worker threads or reaps worker child processes (`pthread_join` / `waitpid`).
+Because running child processes are terminated first, worker threads unblock immediately, preventing deadlocks or application freezes during exit.
+
+---
+
+## 9. Forbidden Command Policy (`nano`)
+
+Terminator's primary objective in Tasks 1–5 is solid shell and terminal emulation (built-ins, pipelines, redirection, multiline input, multi-tab thread/process architectures). Full-screen raw-terminal curses programs (such as `nano`) require pseudo-terminal raw modes and full cursor-addressable terminal matrices.
+
+To prevent terminal corruption, blank screens, or hangs, the `nano` command is explicitly intercepted and forbidden before execution:
+1. `is_forbidden_command(cmd)` inspects command base names.
+2. If `nano` is invoked (e.g. `nano`, `/bin/nano`, `nano file.txt`):
+   - In synchronous execution (`-c` flag), prints `terminator: nano: command forbidden\n` and sets exit code `1`.
+   - In interactive worker execution, sends `IPC_MSG_OUTPUT` with `terminator: nano: command forbidden\n`, records exit status `1`, and emits `IPC_MSG_PROMPT` immediately.
+3. The prompt is restored without blanking or freezing the interface.

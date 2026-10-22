@@ -8,6 +8,25 @@
 #include <stdio.h>
 #include <string.h>
 
+static Tab *g_mode_b_worker_tab = NULL;
+
+static void worker_sigint_handler(int sig) {
+    (void)sig;
+    if (g_mode_b_worker_tab) {
+        if (g_mode_b_worker_tab->foreground_pgid > 0) {
+            kill(-g_mode_b_worker_tab->foreground_pgid, SIGINT);
+        } else if (g_mode_b_worker_tab->running_pid > 0) {
+            kill(-g_mode_b_worker_tab->running_pid, SIGINT);
+            kill(g_mode_b_worker_tab->running_pid, SIGINT);
+        }
+        for (int i = 0; i < g_mode_b_worker_tab->num_pipeline_pids; i++) {
+            if (g_mode_b_worker_tab->pipeline_pids[i] > 0) {
+                kill(g_mode_b_worker_tab->pipeline_pids[i], SIGINT);
+            }
+        }
+    }
+}
+
 static void run_worker_loop(Tab *tab, int read_fd, int write_fd, bool is_child_process) {
     IPCHeader hdr;
     while (1) {
@@ -26,10 +45,12 @@ static void run_worker_loop(Tab *tab, int read_fd, int write_fd, bool is_child_p
                 }
             }
             cmd[hdr.length] = '\0';
-            executor_run_line_worker(tab, cmd, write_fd);
+            executor_run_line_worker(tab, cmd, read_fd, write_fd);
             free(cmd);
         } else if (hdr.type == IPC_MSG_INT) {
-            if (tab->running_pid > 0) {
+            if (tab->foreground_pgid > 0) {
+                kill(-tab->foreground_pgid, SIGINT);
+            } else if (tab->running_pid > 0) {
                 kill(-tab->running_pid, SIGINT);
                 kill(tab->running_pid, SIGINT);
             }
@@ -73,25 +94,10 @@ void shell_destroy(Shell *shell) {
     for (int i = 0; i < shell->num_tabs; i++) {
         Tab *tab = shell->tabs[i];
         if (tab) {
-            if (tab->to_worker_pipe[1] >= 0) {
-                ipc_send_msg(tab->to_worker_pipe[1], IPC_MSG_QUIT, NULL, 0);
-            }
-            if (tab->thread_created) {
-                pthread_join(tab->worker_thread, NULL);
-                tab->thread_created = false;
-            }
-            if (tab->child_pid > 0) {
-                if (tab->to_worker_pipe[1] >= 0) {
-                    close(tab->to_worker_pipe[1]);
-                    tab->to_worker_pipe[1] = -1;
-                }
-                int status = 0;
-                pid_t wp = waitpid(tab->child_pid, &status, WNOHANG);
-                if (wp <= 0) {
-                    kill(tab->child_pid, SIGTERM);
-                    waitpid(tab->child_pid, &status, 0);
-                }
-                tab->child_pid = -1;
+            /* 1. Terminate running child process groups first to unblock threads */
+            if (tab->foreground_pgid > 0) {
+                kill(-tab->foreground_pgid, SIGTERM);
+                kill(-tab->foreground_pgid, SIGKILL);
             }
             if (tab->running_pid > 0) {
                 kill(-tab->running_pid, SIGTERM);
@@ -99,9 +105,33 @@ void shell_destroy(Shell *shell) {
             }
             for (int k = 0; k < tab->num_pipeline_pids; k++) {
                 if (tab->pipeline_pids[k] > 0) {
-                    kill(tab->pipeline_pids[k], SIGTERM);
+                    kill(tab->pipeline_pids[k], SIGKILL);
                 }
             }
+
+            /* 2. Signal worker to quit */
+            if (tab->to_worker_pipe[1] >= 0) {
+                ipc_send_msg(tab->to_worker_pipe[1], IPC_MSG_QUIT, NULL, 0);
+                close(tab->to_worker_pipe[1]);
+                tab->to_worker_pipe[1] = -1;
+            }
+
+            /* 3. Join thread or reap child process */
+            if (tab->thread_created) {
+                pthread_join(tab->worker_thread, NULL);
+                tab->thread_created = false;
+            }
+            if (tab->child_pid > 0) {
+                int status = 0;
+                pid_t wp = waitpid(tab->child_pid, &status, WNOHANG);
+                if (wp <= 0) {
+                    kill(tab->child_pid, SIGTERM);
+                    kill(tab->child_pid, SIGKILL);
+                    waitpid(tab->child_pid, &status, 0);
+                }
+                tab->child_pid = -1;
+            }
+
             terminal_tab_destroy(tab);
             shell->tabs[i] = NULL;
         }
@@ -191,6 +221,9 @@ Tab *shell_open_tab(Shell *shell, const char *initial_dir) {
         }
 
         if (pid == 0) {
+            g_mode_b_worker_tab = tab;
+            signal(SIGINT, worker_sigint_handler);
+
             /* Child process: close GUI pipe ends */
             close(tab->to_worker_pipe[1]);
             close(tab->from_worker_pipe[0]);
@@ -258,20 +291,29 @@ void shell_close_tab(Shell *shell, int tab_idx) {
 
     Tab *tab = shell->tabs[tab_idx];
     if (tab) {
-        if (tab->child_pid > 0) {
-            int status = 0;
-            pid_t wp = waitpid(tab->child_pid, &status, WNOHANG);
-            if (wp == tab->child_pid) {
-                tab->child_pid = -1;
+        /* 1. Terminate running child process groups first to unblock threads */
+        if (tab->foreground_pgid > 0) {
+            kill(-tab->foreground_pgid, SIGTERM);
+            kill(-tab->foreground_pgid, SIGKILL);
+        }
+        if (tab->running_pid > 0) {
+            kill(-tab->running_pid, SIGTERM);
+            kill(tab->running_pid, SIGTERM);
+        }
+        for (int i = 0; i < tab->num_pipeline_pids; i++) {
+            if (tab->pipeline_pids[i] > 0) {
+                kill(tab->pipeline_pids[i], SIGKILL);
             }
         }
 
+        /* 2. Signal worker to quit */
         if (tab->to_worker_pipe[1] >= 0) {
             ipc_send_msg(tab->to_worker_pipe[1], IPC_MSG_QUIT, NULL, 0);
             close(tab->to_worker_pipe[1]);
             tab->to_worker_pipe[1] = -1;
         }
 
+        /* 3. Join thread or reap child process */
         if (tab->thread_created) {
             pthread_join(tab->worker_thread, NULL);
             tab->thread_created = false;
@@ -279,23 +321,13 @@ void shell_close_tab(Shell *shell, int tab_idx) {
 
         if (tab->child_pid > 0) {
             int status = 0;
-            usleep(10000);
             pid_t wp = waitpid(tab->child_pid, &status, WNOHANG);
             if (wp <= 0) {
                 kill(tab->child_pid, SIGTERM);
+                kill(tab->child_pid, SIGKILL);
                 waitpid(tab->child_pid, &status, 0);
             }
             tab->child_pid = -1;
-        }
-
-        if (tab->running_pid > 0) {
-            kill(-tab->running_pid, SIGTERM);
-            kill(tab->running_pid, SIGTERM);
-        }
-        for (int i = 0; i < tab->num_pipeline_pids; i++) {
-            if (tab->pipeline_pids[i] > 0) {
-                kill(tab->pipeline_pids[i], SIGTERM);
-            }
         }
 
         terminal_tab_destroy(tab);

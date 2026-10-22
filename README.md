@@ -9,12 +9,19 @@ It features a custom-built GUI window, genuine shell lexer and parser, process o
 ## 1. Implemented Features (Tasks 1–5)
 
 ### Task 1 — X11 GUI, Multi-Tab Interaction, Thread/Process Modes & Functional Scrollbar
-- **Native Xlib Window**: Built directly with `XOpenDisplay`, `XCreateWindow`, `XMapWindow`, `XSelectInput`, `XNextEvent`, and `XDrawString`.
+- **Native Xlib Window**: Built directly with `XOpenDisplay`, `XCreateWindow`, `XMapWindow`, `XSelectInput`, `XNextEvent`, and `XDrawString`. Clean window title set strictly to `"Terminator"` across standard ICCCM and Extended Window Manager Hints (`_NET_WM_NAME`).
 - **Double-Buffered Rendering**: Smooth rendering via an off-screen `Pixmap` back-buffer, preventing flicker during typing and rapid output streaming.
 - **Neon Aurora Theme**: Bespoke visual palette (#19172B rich dark background, #24213B secondary surface, #302A4B elevated tab cards, #A78BFA purple accents, #22D3EE bright turquoise/cyan prompts, #F472B6 neon pink user badges, #60A5FA blue directory accents, #A6E3A1 soft green status indicators, #F0ABFC cursor).
 - **Dual Architecture Execution Modes (Mode A & Mode B)**:
   - **Mode A — Thread Mode (`./terminator`, default)**: Exactly one Terminator process owns the X11 GUI. Each tab is represented by an independent POSIX thread (`pthread_create`), isolated shell state/CWD/jobs, and shared command history synchronized via a thread mutex.
   - **Mode B — Process Mode (`./terminator useProcess=True`)**: Parent process owns X11. Each newly opened tab is represented by an independent child process (`fork()`) communicating via bidirectional IPC pipes. Command history is shared in POSIX shared memory (`shm_open` + `mmap(MAP_SHARED)`) protected by a **process-shared semaphore** (`sem_init(..., 1, 1)`). Tab failure or exit does not crash unrelated tabs or the GUI.
+- **Foreground Job Isolation, Ctrl+C & Hang-Free GUI Shutdown (e.g. `geany`, long-running tasks)**:
+  - Assigns commands and pipelines their own process group (`setpgid`).
+  - Pressing `Ctrl+C` sends `SIGINT` directly to the foreground process group (`kill(-tab->foreground_pgid, SIGINT)`), interrupting commands (such as `geany`, `sleep`, or `cat`) without crashing Terminator or worker threads/processes.
+  - Non-blocking multiplexed `poll()` loops prevent worker hangs while GUI applications or long-running commands run.
+  - Window close button (`WM_DELETE_WINDOW`) and tab close immediately terminate running child processes before joining threads, eliminating application freezes during exit.
+- **Forbidden Command Guard (`nano`)**:
+  - Full-screen curses/terminal-raw editor commands (`nano`, `/bin/nano`, etc.) are explicitly forbidden for Phase 1. Attempting to execute `nano` outputs `terminator: nano: command forbidden`, sets exit status `1`, and safely returns to the prompt without blanking, freezing, or corrupting terminal state.
 - **Assignment-Compliant Functional Vertical Scrollbar**:
   - Visible scrollbar track and proportionally sized thumb (`thumb_h = (sb_h * visible_rows) / total_rows`, minimum 24px).
   - Accurate viewport positioning matching exact scrollback buffer depth.
@@ -157,7 +164,7 @@ To execute a command string through the Terminator engine and print output:
 
 ## 5. Automated Test Suite
 
-Run the complete 149-test automated test suite covering Tasks 1–5, Thread Mode, Process Mode, and Scrollbar mechanics:
+Run the complete 151-test automated test suite covering Tasks 1–5, Thread Mode, Process Mode, Ctrl+C interrupt handling, and Scrollbar mechanics:
 ```bash
 make test
 ```

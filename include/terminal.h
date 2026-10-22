@@ -71,6 +71,7 @@ typedef struct Tab {
     /* Active execution tracking */
     int out_pipe_fd;
     pid_t running_pid;
+    pid_t foreground_pgid;
     pid_t pipeline_pids[MAX_PIPELINE_CMDS];
     int num_pipeline_pids;
     int last_exit_status;

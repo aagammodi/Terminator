@@ -69,27 +69,40 @@ void input_handle_key_event(XKeyEvent *event, Shell *shell, bool *needs_redraw) 
             }
             return;
         }
+    }
 
-        if (ksym == XK_c || ksym == XK_C) {
-            /* Ctrl+C: Cancel current line or interrupt active running child */
-            if (tab->state == SHELL_STATE_RUNNING && tab->to_worker_pipe[1] >= 0) {
+    /* If a foreground command or application is currently running */
+    if (tab->state == SHELL_STATE_RUNNING) {
+        if (is_ctrl && (ksym == XK_c || ksym == XK_C)) {
+            /* Ctrl+C: Send SIGINT to child process group immediately */
+            if (tab->to_worker_pipe[1] >= 0) {
                 ipc_send_msg(tab->to_worker_pipe[1], IPC_MSG_INT, NULL, 0);
+            }
+            if (tab->foreground_pgid > 0) {
+                kill(-tab->foreground_pgid, SIGINT);
             } else if (tab->running_pid > 0) {
                 kill(-tab->running_pid, SIGINT);
                 kill(tab->running_pid, SIGINT);
-            } else {
-                /* Display ^C and reset prompt */
-                char line_buf[MAX_INPUT_LEN * 2 + 16];
-                char prompt[MAX_INPUT_LEN];
-                shell_format_prompt(tab, prompt, sizeof(prompt));
-                snprintf(line_buf, sizeof(line_buf), "%s%s^C", prompt, tab->input);
-                terminal_append_line(tab, line_buf, LINE_TYPE_PROMPT);
-                terminal_clear_input(tab);
-                tab->accumulated_cmd[0] = '\0';
-                tab->in_continuation = false;
-                tab->state = SHELL_STATE_READY;
-                terminal_show_prompt(tab);
             }
+            return;
+        }
+        return;
+    }
+
+    /* Handle Ctrl shortcuts for command editing */
+    if (is_ctrl) {
+        if (ksym == XK_c || ksym == XK_C) {
+            /* Display ^C and reset prompt */
+            char line_buf[MAX_INPUT_LEN * 2 + 16];
+            char prompt[MAX_INPUT_LEN];
+            shell_format_prompt(tab, prompt, sizeof(prompt));
+            snprintf(line_buf, sizeof(line_buf), "%s%s^C", prompt, tab->input);
+            terminal_append_line(tab, line_buf, LINE_TYPE_PROMPT);
+            terminal_clear_input(tab);
+            tab->accumulated_cmd[0] = '\0';
+            tab->in_continuation = false;
+            tab->state = SHELL_STATE_READY;
+            terminal_show_prompt(tab);
             return;
         }
 

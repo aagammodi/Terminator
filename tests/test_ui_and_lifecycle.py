@@ -31,6 +31,8 @@ def run_interactive_session(extra_args=None, mode_name="Thread Mode"):
     if pid == 0:
         os.close(master)
         os.setsid()
+        import fcntl, termios
+        fcntl.ioctl(slave, termios.TIOCSCTTY, 0)
         os.dup2(slave, 0)
         os.dup2(slave, 1)
         os.dup2(slave, 2)
@@ -133,7 +135,19 @@ def run_interactive_session(extra_args=None, mode_name="Thread Mode"):
     res_sgr = read_until("@terminator> ", timeout=1.5)
     check("ANSI SGR codes parsed cleanly without raw escape leaks", "colored_output_test" in res_sgr and "\033[32m" not in res_sgr, f"Output was: {repr(res_sgr)}")
 
-    # 11. Clean exit
+    # 11. Ctrl+C interrupts running foreground process
+    send_cmd("sleep 10")
+    time.sleep(0.15)
+    os.write(master, b"\x03")
+    res_int = read_until("@terminator> ", timeout=2.0)
+    check("Ctrl+C terminates running child process and restores prompt", "@terminator> " in res_int, f"Output was: {repr(res_int)}")
+
+    # 12. Forbidden command (nano) rejection
+    send_cmd("nano test.txt")
+    res_nano = read_until("@terminator> ", timeout=1.5)
+    check("Forbidden command 'nano' rejected cleanly", "nano: command forbidden" in res_nano, f"Output was: {repr(res_nano)}")
+
+    # 13. Clean exit
     send_cmd("exit")
     time.sleep(0.1)
     os.close(master)

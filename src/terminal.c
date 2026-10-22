@@ -59,6 +59,7 @@ Tab *terminal_tab_create(int id, const char *initial_dir, Shell *shell) {
 
     tab->out_pipe_fd = -1;
     tab->running_pid = -1;
+    tab->foreground_pgid = -1;
     tab->num_pipeline_pids = 0;
     tab->last_exit_status = 0;
 
@@ -331,8 +332,12 @@ void terminal_append_output_bytes(Tab *tab, const char *bytes, size_t len, bool 
                     tab->partial_len = 0;
                     tab->partial_line[0] = '\0';
                 } else if (c == '\r') {
-                    /* Ignore carriage returns */
-                    continue;
+                    if (i + 1 < len && bytes[i + 1] == '\n') {
+                        continue;
+                    }
+                    /* Standalone carriage return in normal mode: reset partial line */
+                    tab->partial_len = 0;
+                    tab->partial_line[0] = '\0';
                 } else if (c == '\b') {
                     if (tab->partial_len > 0) {
                         tab->partial_len--;
@@ -346,7 +351,6 @@ void terminal_append_output_bytes(Tab *tab, const char *bytes, size_t len, bool 
                         tab->partial_colors[tab->partial_len] = tab->current_fg_color;
                         tab->partial_line[tab->partial_len++] = c;
                     } else {
-                        /* Line buffer full, flush current segment */
                         tab->partial_line[tab->partial_len] = '\0';
                         terminal_append_line_with_colors(tab, tab->partial_line, tab->partial_colors, tab->partial_len, line_type);
                         tab->partial_len = 0;
@@ -404,12 +408,12 @@ void terminal_append_output_bytes(Tab *tab, const char *bytes, size_t len, bool 
                             }
                         }
                     } else if (c == 'J') {
-                        /* Erase in Display: 2J (screen), 3J (scrollback) */
+                        /* Erase in Display */
                         if (strstr(tab->csi_buf, "2") || strstr(tab->csi_buf, "3") || tab->csi_len == 0) {
                             terminal_clear_screen(tab);
                         }
                     } else if (c == 'H' || c == 'f') {
-                        /* Cursor Home */
+                        /* Cursor Position / Home */
                         tab->scroll_offset = 0;
                     } else if (c == 'K') {
                         /* Erase in Line */

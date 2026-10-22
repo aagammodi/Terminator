@@ -130,7 +130,13 @@ GUI *gui_create(Shell *shell, int width, int height) {
     );
 
     /* Window Title */
-    XStoreName(dpy, gui->win, "Terminator — Neon Aurora");
+    XStoreName(dpy, gui->win, "Terminator");
+    XSetIconName(dpy, gui->win, "Terminator");
+    Atom net_wm_name = XInternAtom(dpy, "_NET_WM_NAME", False);
+    Atom net_wm_icon_name = XInternAtom(dpy, "_NET_WM_ICON_NAME", False);
+    Atom utf8_string = XInternAtom(dpy, "UTF8_STRING", False);
+    XChangeProperty(dpy, gui->win, net_wm_name, utf8_string, 8, PropModeReplace, (const unsigned char *)"Terminator", 10);
+    XChangeProperty(dpy, gui->win, net_wm_icon_name, utf8_string, 8, PropModeReplace, (const unsigned char *)"Terminator", 10);
 
     /* Handle WM_DELETE_WINDOW cleanly */
     gui->wm_delete_window = XInternAtom(dpy, "WM_DELETE_WINDOW", False);
@@ -277,7 +283,7 @@ void gui_redraw(GUI *gui) {
     int stat_h = t->status_bar_height;
     int stat_y = h - stat_h;
     fill_rect(gui, 0, stat_y, w, stat_h, theme_color(t, COLOR_SURFACE_SEC));
-    draw_line(gui, 0, stat_y, w, stat_h, theme_color(t, COLOR_BORDER));
+    draw_line(gui, 0, stat_y, w, stat_y, theme_color(t, COLOR_BORDER));
 
     int stat_text_y = stat_y + (stat_h / 2) + (t->font_ascent / 2) - 1;
     int sx = 16;
@@ -472,6 +478,7 @@ void gui_run_event_loop(GUI *gui) {
                             (unsigned int)gui->width, (unsigned int)gui->height,
                             (unsigned int)DefaultDepth(gui->dpy, gui->screen)
                         );
+
                         gui->needs_redraw = true;
                     }
                     break;

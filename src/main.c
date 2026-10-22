@@ -7,6 +7,33 @@
 #include <stdio.h>
 #include <string.h>
 #include <strings.h>
+#include <signal.h>
+
+static Tab *g_active_tab = NULL;
+
+static void headless_sigint_handler(int sig) {
+    (void)sig;
+    if (g_active_tab) {
+        if (g_active_tab->state == SHELL_STATE_RUNNING) {
+            if (g_active_tab->to_worker_pipe[1] >= 0) {
+                ipc_send_msg(g_active_tab->to_worker_pipe[1], IPC_MSG_INT, NULL, 0);
+            }
+            if (g_active_tab->foreground_pgid > 0) {
+                kill(-g_active_tab->foreground_pgid, SIGINT);
+            } else if (g_active_tab->running_pid > 0) {
+                kill(-g_active_tab->running_pid, SIGINT);
+                kill(g_active_tab->running_pid, SIGINT);
+            }
+        } else {
+            /* If waiting at prompt, print newline and redisplay */
+            printf("\n");
+            char prompt_buf[MAX_INPUT_LEN];
+            shell_format_prompt(g_active_tab, prompt_buf, sizeof(prompt_buf));
+            printf("%s", prompt_buf);
+            fflush(stdout);
+        }
+    }
+}
 
 static void print_usage(const char *prog) {
     printf("Terminator — Custom Terminal Emulator & Shell (Phase 1)\n");
@@ -21,6 +48,9 @@ static void print_usage(const char *prog) {
 static int run_headless_shell(Shell *shell) {
     Tab *tab = shell_get_active_tab(shell);
     if (!tab) return 1;
+
+    g_active_tab = tab;
+    signal(SIGINT, headless_sigint_handler);
 
     tab->echo_to_stdout = true;
     bool interactive = isatty(STDIN_FILENO);

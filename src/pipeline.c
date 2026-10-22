@@ -50,6 +50,7 @@ int pipeline_execute(Pipeline *pipeline, Tab *tab) {
     fcntl(capture_pipe[0], F_SETFD, FD_CLOEXEC);
 
     tab->num_pipeline_pids = 0;
+    pid_t first_pgid = 0;
 
     for (int i = 0; i < n; i++) {
         Command *cmd = &pipeline->commands[i];
@@ -57,7 +58,6 @@ int pipeline_execute(Pipeline *pipeline, Tab *tab) {
         pid_t pid = fork();
         if (pid < 0) {
             perror("terminator: fork failed");
-            /* Clean up already created children */
             for (int k = 0; k < i; k++) {
                 kill(tab->pipeline_pids[k], SIGTERM);
                 waitpid(tab->pipeline_pids[k], NULL, 0);
@@ -74,6 +74,12 @@ int pipeline_execute(Pipeline *pipeline, Tab *tab) {
 
         if (pid == 0) {
             /* Child process i */
+            if (first_pgid == 0) {
+                setpgid(0, 0);
+            } else {
+                setpgid(0, first_pgid);
+            }
+
             if (tab->cwd[0] != '\0') {
                 if (chdir(tab->cwd) != 0) {
                     /* Directory might have been removed, continue anyway */
@@ -152,12 +158,19 @@ int pipeline_execute(Pipeline *pipeline, Tab *tab) {
 
             execvp(cmd->argv[0], cmd->argv);
 
-            /* If execvp returns, it failed */
             fprintf(stderr, "terminator: %s: command not found\n", cmd->argv[0]);
             _exit(127);
         }
 
-        /* Parent process: track child PID */
+        /* Parent process: track child PID and set process group */
+        if (i == 0) {
+            first_pgid = pid;
+            setpgid(pid, first_pgid);
+            tab->foreground_pgid = first_pgid;
+        } else {
+            setpgid(pid, first_pgid);
+        }
+
         tab->pipeline_pids[i] = pid;
         tab->num_pipeline_pids++;
     }

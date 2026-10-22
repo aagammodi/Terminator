@@ -1,0 +1,27 @@
+# Terminator build artifacts
+*.o
+*.a
+terminator
+test_harness
+test_runner
+
+# Temporary and test artifacts
+tests/*.tmp
+tests/out*.txt
+tests/res*.txt
+tests/sort*.txt
+tests/counts*.txt
+*.txt.tmp
+out.txt
+output.txt
+sorted.txt
+counts.txt
+result.txt
+abc
+a.out
+
+# Editor and OS files
+.vscode/
+.idea/
+*.swp
+*~

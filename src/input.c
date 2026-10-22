@@ -1,6 +1,7 @@
 #include "input.h"
 #include "terminal.h"
 #include "executor.h"
+#include "shell.h"
 #include "util.h"
 #include <X11/Xutil.h>
 #include <X11/keysym.h>
@@ -23,10 +24,48 @@ void input_handle_key_event(XKeyEvent *event, Shell *shell, bool *needs_redraw) 
 
     bool is_ctrl = (event->state & ControlMask) != 0;
     bool is_shift = (event->state & ShiftMask) != 0;
-    (void)is_shift;
+
+    /* Handle Tab Creation and Closing shortcuts */
+    if (is_ctrl && is_shift) {
+        if (ksym == XK_t || ksym == XK_T) {
+            /* Ctrl+Shift+T: Open new tab */
+            shell_open_tab(shell, NULL);
+            return;
+        }
+        if (ksym == XK_w || ksym == XK_W) {
+            /* Ctrl+Shift+W: Close active tab */
+            shell_close_tab(shell, shell->active_tab_idx);
+            return;
+        }
+    }
 
     /* Handle Ctrl shortcuts */
     if (is_ctrl) {
+        if (ksym == XK_Prior) {
+            /* Ctrl+PageUp: Switch to previous tab */
+            if (shell->num_tabs > 1) {
+                int prev = (shell->active_tab_idx - 1 + shell->num_tabs) % shell->num_tabs;
+                shell_switch_tab(shell, prev);
+            }
+            return;
+        }
+        if (ksym == XK_Next) {
+            /* Ctrl+PageDown: Switch to next tab */
+            if (shell->num_tabs > 1) {
+                int next = (shell->active_tab_idx + 1) % shell->num_tabs;
+                shell_switch_tab(shell, next);
+            }
+            return;
+        }
+        if (ksym >= XK_1 && ksym <= XK_9) {
+            /* Ctrl+1..9: Direct tab switch */
+            int target_idx = (int)(ksym - XK_1);
+            if (target_idx < shell->num_tabs) {
+                shell_switch_tab(shell, target_idx);
+            }
+            return;
+        }
+
         if (ksym == XK_c || ksym == XK_C) {
             /* Ctrl+C: Cancel current line or interrupt active running child */
             if (tab->running_pid > 0) {
@@ -87,9 +126,9 @@ void input_handle_key_event(XKeyEvent *event, Shell *shell, bool *needs_redraw) 
         }
 
         if (ksym == XK_d || ksym == XK_D) {
-            /* Ctrl+D: Exit shell if line is empty */
+            /* Ctrl+D: Exit shell or close active tab if input line is empty */
             if (tab->input[0] == '\0' && tab->running_pid <= 0) {
-                shell->running = false;
+                shell_close_tab(shell, shell->active_tab_idx);
                 return;
             }
         }
@@ -227,8 +266,50 @@ void input_handle_button_event(XButtonEvent *event, Shell *shell, int win_width,
     Tab *tab = shell_get_active_tab(shell);
     if (!tab) return;
 
-    (void)win_width;
     (void)win_height;
+
+    /* Left Click on Tab Bar or Affordances */
+    if (event->button == Button1) {
+        int bar_h = 38;
+        int brand_y = 6;
+        int brand_h = bar_h - 12;
+
+        if (event->y >= brand_y && event->y <= brand_y + brand_h) {
+            int brand_pad_x = 16;
+            int brand_w = 104; /* Matches logo badge width */
+            int tab_x = brand_pad_x + brand_w + 12;
+            int add_w = 28;
+            int add_margin = 8;
+            int right_margin = 16;
+
+            int max_tab_w = 180;
+            int avail_tab_space = win_width - tab_x - add_w - add_margin - right_margin;
+            int tab_w = (shell->num_tabs > 0) ? (avail_tab_space / shell->num_tabs) - 6 : max_tab_w;
+            if (tab_w > max_tab_w) tab_w = max_tab_w;
+            if (tab_w < 70) tab_w = 70;
+
+            for (int i = 0; i < shell->num_tabs; i++) {
+                int cur_x = tab_x + i * (tab_w + 6);
+                if (event->x >= cur_x && event->x <= cur_x + tab_w) {
+                    if (event->x >= cur_x + tab_w - 20) {
+                        /* Clicked 'x' close button */
+                        shell_close_tab(shell, i);
+                    } else {
+                        shell_switch_tab(shell, i);
+                    }
+                    *needs_redraw = true;
+                    return;
+                }
+            }
+
+            int add_x = tab_x + shell->num_tabs * (tab_w + 6) + add_margin;
+            if (event->x >= add_x && event->x <= add_x + add_w) {
+                shell_open_tab(shell, NULL);
+                *needs_redraw = true;
+                return;
+            }
+        }
+    }
 
     /* Mouse Wheel */
     if (event->button == Button4) {

@@ -8,24 +8,37 @@ It features a custom-built GUI window, genuine shell lexer and parser, process o
 
 ## 1. Implemented Features (Tasks 1–5)
 
-### Task 1 — X11 GUI & Terminal Interaction
+### Task 1 — X11 GUI, Multi-Tab Interaction & Color Rendering
 - **Native Xlib Window**: Built directly with `XOpenDisplay`, `XCreateWindow`, `XMapWindow`, `XSelectInput`, `XNextEvent`, and `XDrawString`.
 - **Double-Buffered Rendering**: Smooth rendering via an off-screen `Pixmap` back-buffer, preventing flicker during typing and rapid output streaming.
 - **Neon Aurora Theme**: Bespoke visual palette (#19172B rich dark background, #24213B secondary surface, #302A4B elevated tab cards, #A78BFA purple accents, #22D3EE bright turquoise/cyan prompts, #F472B6 neon pink user badges, #60A5FA blue directory accents, #A6E3A1 soft green status indicators, #F0ABFC cursor).
-- **Interactive Top Bar & Tab Strip**: Distinct application branding, active tab card `[ 1: ~/dir ]` with glowing violet underline and text truncation ellipses (`...`) preventing any overlap, and an independent `[ + ]` add-tab affordance.
-- **Status Area**: Subtle bottom status bar showing tab ID, compact current working directory, previous exit status `$?`, and line count.
+- **Interactive Multi-Tab Support**:
+  - Independent tabs (up to 16) each with their own isolated working directory, input buffer, scrollback buffer, history, running process, and cursor.
+  - Interactive top bar showing all open tabs: `[ 1: ~/Downloads ] [ 2: /tmp ] [ + ]`.
+  - Open new tabs via mouse click on `[ + ]` or `Ctrl+Shift+T`.
+  - Switch tabs via mouse click on any tab card, `Ctrl+PageUp` / `Ctrl+PageDown`, or `Ctrl+1` through `Ctrl+9`.
+  - Close tabs via mouse click on the `x` affordance, `Ctrl+Shift+W`, typing `exit`, or pressing `Ctrl+D` on an empty line. Closing the last remaining tab cleanly exits the application.
+  - Active tab highlighted with elevated surface background, glowing violet accent underline, and vibrant typography.
+  - Text truncation with ellipses (`...`) dynamically accommodates window resizing without overlapping.
+- **Asynchronous Multi-Tab Background Execution**:
+  - The `poll()` event loop simultaneously watches the X11 connection and the output pipes of **all** open tabs.
+  - Hidden background tabs continue running commands and collecting output asynchronously into their own buffers without blocking the GUI or other tabs.
+- **ANSI SGR Color Rendering**:
+  - Full Select Graphic Rendition (SGR) parser (`\033[...m`) supporting standard (30–37), bold/bright, and high-intensity (90–97) color codes.
+  - Commands such as `ls --color=always` render in vibrant colors (directories in blue, executables in green, errors in red, etc.) mapped directly to the Neon Aurora palette.
+- **Status Area**: Subtle bottom status bar showing active tab index and total count `[TAB x/y]`, compact current working directory, previous exit status `$?`, and line count.
 - **Full Line Editor & Single-Prompt Invariant**: Real-time character insertion, Backspace, Delete, Left/Right arrow cursor movement, Home, End, Ctrl+A, Ctrl+E, Ctrl+U (delete to start), Ctrl+K (delete to end), Ctrl+W (delete word backward), and Ctrl+L (clear screen). Enforces an explicit `ShellState` lifecycle guaranteeing exactly one active prompt at any time without phantom duplicates.
-- **Responsive poll() Event Loop**: Non-blocking multiplexing between the X11 connection (`ConnectionNumber(dpy)`) and child command output pipe(s). Window never freezes on long-running commands or commands without output.
-- **Scrollback Buffer**: Dynamic line storage up to 10,000 lines, scrollable via PageUp / PageDown and mouse wheel (Button4 / Button5), with a proportional scrollbar indicator and automatic return-to-bottom on new input.
+- **Scrollback Buffer**: Dynamic line storage up to 10,000 lines per tab, scrollable via PageUp / PageDown and mouse wheel (Button4 / Button5), with a proportional scrollbar indicator and automatic return-to-bottom on new input.
 
 ### Task 2 — Built-in & External Commands
 - **External Commands**: Executed via `fork()` + `execvp()`. When a command is not found, displays `terminator: <cmd>: command not found` and sets exit code 127 without crashing the GUI.
-- **cd Built-in**: Changes the directory of the shell process itself using `chdir()`. Supports `cd` (HOME), `cd ~`, `cd ~/path`, absolute and relative paths, gracefully reports errors on missing directories, and updates the prompt.
+- **cd Built-in**: Changes the directory of the shell tab itself using `chdir()`. Supports `cd` (HOME), `cd ~`, `cd ~/path`, absolute and relative paths, gracefully reports errors on missing directories, and updates the prompt. Independent across tabs.
 - **pwd Built-in**: Prints current working directory from `getcwd()`.
 - **clear Built-in & ANSI CSI Parser**: Implements `clear` as a native shell built-in to immediately reset visible terminal output, and integrates an ANSI CSI escape-sequence parser supporting `\033[2J`, `\033[3J`, cursor positioning, and SGR sequences so external tools never produce raw escape codes like `^[[H^[[2J`.
-- **exit Built-in**: Cleanly shuts down the shell and closes the GUI.
+- **exit Built-in**: Closes the active tab (or cleanly terminates the application if only one tab remains).
 - **history Built-in**: Displays recent numbered commands from in-memory history.
-- **Reserved Built-in Stubs**: Dispatch interface and informative stubs for `multiWatch`, `jobs`, `fg`, `bg`, and `source` reserved for Tasks 6–11.
+- **source Built-in**: Genuinely reads and executes command script files line-by-line within the tab's shell context, handling comments (`#`), multiline continuations, directory changes, and sequentially executed pipelines.
+- **Reserved Built-in Stubs**: Dispatch interface and informative stubs for `multiWatch` (requires Tasks 6–11), and clean empty output for `jobs`, with clean non-fatal errors for `fg` and `bg` (`no current job`).
 - **Status Tracking**: Tracks and maintains `$?` across built-in and external commands.
 
 ### Task 3 — Multiline Input, Quoting, and Command Substitution
@@ -34,6 +47,7 @@ It features a custom-built GUI window, genuine shell lexer and parser, process o
 - **Quoting Semantics**:
   - `'single quotes'`: Enclosed text is completely literal; no variable expansion or substitutions occur.
   - `"double quotes"`: Preserves spaces and argument boundaries while permitting variable expansion and command substitutions.
+  - Empty quotes preservation: Preserves `""` and `''` as valid distinct empty string arguments (`argv[i] = ""`).
   - Backslash `\`: Escapes the next character outside single quotes; trailing `\` performs line continuation.
 - **Variable Expansion**: Expands `$VAR`, `${VAR}`, `$?` (exit status), and `$$` (PID) in unquoted and double-quoted contexts.
 - **Command Substitution**: Evaluates `$(cmd)` and `` `cmd` `` recursively from innermost to outermost through our own shell execution engine, captures output through pipes, strips trailing newlines, and splices the result into the command stream.
@@ -59,6 +73,7 @@ It features a custom-built GUI window, genuine shell lexer and parser, process o
   - Every child closes all unused pipe read/write ends.
   - Parent closes all $N-1$ pipe ends immediately after launching all children, ensuring EOF propagation.
 - **Pipeline Status**: Reaps all child PIDs and records the final pipeline command's exit code in `$?`.
+- **Pipeline Stage Safety Limits**: Strictly validates against `MAX_PIPELINE_CMDS` (64 stages); gracefully rejects overflow pipelines with exit code 1 to protect process table and descriptor table limits.
 - **Large Stream Handling**: Asynchronous output reading prevents deadlocks when commands produce streams exceeding the Linux kernel pipe capacity (verified with 1MB+ streams).
 
 ---
@@ -198,10 +213,10 @@ sort < input.txt | uniq -c > counts.txt
 
 ## 7. Known Limitations & Deferred Features (Tasks 6–11)
 
-As specified in Phase 1 non-goals:
-- **Multiple Functional Tabs**: Phase 1 includes 1 fully functional tab with an extensible tab data structure. Multi-tab concurrency (Thread mode and Process mode) is deferred to Tasks 6–11.
-- **Signals & Process Group Job Control**: Ctrl+C and Ctrl+Z signal handling, background jobs (`&`), `jobs`, `fg`, `bg` are deferred to Task 8.
+As specified in the course project phase guidelines:
+- **Thread & Process Concurrency Modes with Shared IPC**: Phase 1 implements isolated multi-tab state and asynchronous output polling within the application process. POSIX thread-per-tab (Thread mode) and fork-per-tab with shared memory & POSIX semaphores (Process mode `useProcess=True`) are specified in the Under All / Act 4 phase.
+- **Signals & Process Group Job Control**: Background job operators (`&`), stopped jobs, Ctrl+Z, and active foreground process group management are deferred to Task 8.
 - **multiWatch**: Parallel command runner with periodic polling is deferred to Task 6.
 - **Searchable History & Ctrl+R**: 10,000-entry persistent disk history with longest-common-substring search is deferred to Task 9.
 - **Filename Tab Auto-completion**: Interactive Tab completion is deferred to Task 10.
-- **Bash Script Interpreter**: Execution of `.sh` script files with if/elif/else constructs is deferred to Task 11.
+- **Advanced Bash Script Control Flow**: `if/elif/else/fi` conditional evaluation and test expressions (`[ ... ]`) are deferred to Task 11 (`source <script>` for sequential commands and comments is fully functional in Task 2).

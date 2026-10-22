@@ -93,6 +93,20 @@ else
     FAIL=$((FAIL + 1))
 fi
 
+# 10. Pipeline stage limit safety enforcement (> 64 stages)
+set +e
+cmd_70=$(python3 -c 'print(" | ".join(["echo ok"] * 70))')
+err_out=$($TERMINATOR -c "$cmd_70" 2>&1)
+err_status=$?
+set -e
+if echo "$err_out" | grep -qF "pipeline exceeds maximum stages" && [ $err_status -ne 0 ]; then
+    echo "  [PASS] Pipeline stage limit safety enforcement (> 64 stages rejected)"
+    PASS=$((PASS + 1))
+else
+    echo "  [FAIL] Pipeline stage limit safety enforcement (Status: $err_status, Output: $err_out)"
+    FAIL=$((FAIL + 1))
+fi
+
 echo "=== Task 5 Result: $PASS Passed, $FAIL Failed ==="
 if [ $FAIL -ne 0 ]; then
     exit 1

@@ -52,7 +52,11 @@ int executor_run_line(Tab *tab, const char *cmd_line) {
 
     /* Parse pipeline */
     Pipeline *pipeline = parser_parse_pipeline(cmd_line, tab->last_exit_status);
-    if (!pipeline || pipeline->num_commands == 0) {
+    if (!pipeline) {
+        tab->last_exit_status = 1;
+        return -1;
+    }
+    if (pipeline->num_commands == 0) {
         pipeline_free(pipeline);
         return 0;
     }

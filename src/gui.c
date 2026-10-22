@@ -146,50 +146,69 @@ void gui_redraw(GUI *gui) {
     int text_y = brand_y + (brand_h / 2) + (t->font_ascent / 2) - 1;
     draw_text(gui, brand_pad_x + 12, text_y, title, theme_color(t, COLOR_ELECTRIC_CYAN));
 
-    /* Tab 1 Card */
+    /* Tabs Bar (Multi-tab support) */
     int tab_x = brand_pad_x + brand_w + 12;
     int add_w = 28;
     int add_margin = 8;
     int right_margin = 16;
 
-    int max_tab_w = 240;
+    int max_tab_w = 180;
     int avail_tab_space = w - tab_x - add_w - add_margin - right_margin;
-    int tab_w = (avail_tab_space < max_tab_w) ? avail_tab_space : max_tab_w;
-    if (tab_w < 80) tab_w = 80;
+    int tab_w = (gui->shell->num_tabs > 0) ? (avail_tab_space / gui->shell->num_tabs) - 6 : max_tab_w;
+    if (tab_w > max_tab_w) tab_w = max_tab_w;
+    if (tab_w < 70) tab_w = 70;
 
     int tab_y = brand_y;
     int tab_h = brand_h;
 
-    fill_rect(gui, tab_x, tab_y, tab_w, tab_h, theme_color(t, COLOR_SURFACE_ELEV));
-    draw_rect(gui, tab_x, tab_y, tab_w, tab_h, theme_color(t, COLOR_BORDER));
+    for (int i = 0; i < gui->shell->num_tabs; i++) {
+        Tab *t_item = gui->shell->tabs[i];
+        if (!t_item) continue;
 
-    /* Prominent active-tab accent line */
-    fill_rect(gui, tab_x, tab_y + tab_h - 2, tab_w, 2, theme_color(t, COLOR_PRIMARY_VIOLET));
+        int cur_x = tab_x + i * (tab_w + 6);
+        bool is_active = (i == gui->shell->active_tab_idx);
 
-    char compact_cwd[MAX_PATH_LEN];
-    path_compact_home(tab->cwd, compact_cwd, sizeof(compact_cwd));
-    char tab_label[MAX_PATH_LEN + 32];
-    snprintf(tab_label, sizeof(tab_label), "1: %s", compact_cwd);
+        unsigned long bg_col = is_active ? theme_color(t, COLOR_SURFACE_ELEV) : theme_color(t, COLOR_SURFACE_SEC);
+        fill_rect(gui, cur_x, tab_y, tab_w, tab_h, bg_col);
+        draw_rect(gui, cur_x, tab_y, tab_w, tab_h, theme_color(t, COLOR_BORDER));
 
-    /* Text truncation with ellipsis */
-    int label_pad_x = 12;
-    int max_text_chars = (tab_w - (label_pad_x * 2)) / (t->font_width > 0 ? t->font_width : 8);
-    if (max_text_chars < 3) max_text_chars = 3;
-    char display_label[256];
-    safe_strncpy(display_label, tab_label, sizeof(display_label));
-    if ((int)strlen(display_label) > max_text_chars) {
-        if (max_text_chars > 3) {
-            display_label[max_text_chars - 3] = '\0';
-            strcat(display_label, "...");
-        } else {
-            display_label[max_text_chars] = '\0';
+        if (is_active) {
+            /* Active tab violet accent underline */
+            fill_rect(gui, cur_x, tab_y + tab_h - 2, tab_w, 2, theme_color(t, COLOR_PRIMARY_VIOLET));
         }
+
+        char compact_dir[MAX_PATH_LEN];
+        path_compact_home(t_item->cwd, compact_dir, sizeof(compact_dir));
+        char tab_label[MAX_PATH_LEN + 32];
+        snprintf(tab_label, sizeof(tab_label), "%d: %s", t_item->id, compact_dir);
+
+        int label_pad_x = 10;
+        int close_btn_w = 16;
+        int max_chars = (tab_w - label_pad_x - close_btn_w) / (t->font_width > 0 ? t->font_width : 8);
+        if (max_chars < 3) max_chars = 3;
+
+        char display_label[256];
+        safe_strncpy(display_label, tab_label, sizeof(display_label));
+        if ((int)strlen(display_label) > max_chars) {
+            if (max_chars > 3) {
+                display_label[max_chars - 3] = '\0';
+                strcat(display_label, "...");
+            } else {
+                display_label[max_chars] = '\0';
+            }
+        }
+
+        unsigned long text_col = is_active ? theme_color(t, COLOR_FG_MAIN) : theme_color(t, COLOR_FG_SEC);
+        draw_text(gui, cur_x + label_pad_x, text_y, display_label, text_col);
+
+        /* Tab close affordance 'x' on right edge */
+        int close_x = cur_x + tab_w - 14;
+        unsigned long close_col = is_active ? theme_color(t, COLOR_NEON_PINK) : theme_color(t, COLOR_FG_SEC);
+        draw_text(gui, close_x, text_y, "x", close_col);
     }
 
-    draw_text(gui, tab_x + label_pad_x, text_y, display_label, theme_color(t, COLOR_FG_MAIN));
-
     /* Add-tab affordance [ + ] in separate, non-overlapping box */
-    int add_x = tab_x + tab_w + add_margin;
+    int add_x = tab_x + gui->shell->num_tabs * (tab_w + 6) + add_margin;
     fill_rect(gui, add_x, tab_y, add_w, tab_h, theme_color(t, COLOR_SURFACE_ELEV));
     draw_rect(gui, add_x, tab_y, add_w, tab_h, theme_color(t, COLOR_BORDER));
     int plus_x = add_x + (add_w - t->font_width) / 2;
@@ -203,10 +222,14 @@ void gui_redraw(GUI *gui) {
 
     int stat_text_y = stat_y + (stat_h / 2) + (t->font_ascent / 2) - 1;
     int sx = 16;
-    draw_text(gui, sx, stat_text_y, "[TAB 1]", theme_color(t, COLOR_PRIMARY_VIOLET));
-    sx += 8 * t->font_width;
+    char tab_stat[32];
+    snprintf(tab_stat, sizeof(tab_stat), "[TAB %d/%d]", gui->shell->active_tab_idx + 1, gui->shell->num_tabs);
+    draw_text(gui, sx, stat_text_y, tab_stat, theme_color(t, COLOR_PRIMARY_VIOLET));
+    sx += ((int)strlen(tab_stat) + 1) * t->font_width;
 
     char cwd_str[MAX_PATH_LEN + 32];
+    char compact_cwd[MAX_PATH_LEN];
+    path_compact_home(tab->cwd, compact_cwd, sizeof(compact_cwd));
     snprintf(cwd_str, sizeof(cwd_str), "CWD: %s", compact_cwd);
     draw_text(gui, sx, stat_text_y, cwd_str, theme_color(t, COLOR_BLUE_ACCENT));
     sx += ((int)strlen(cwd_str) + 2) * t->font_width;
@@ -247,7 +270,28 @@ void gui_redraw(GUI *gui) {
             /* Historical line */
             TerminalLine *tl = &tab->lines[r];
 
-            if (tl->type == LINE_TYPE_PROMPT) {
+            if (tl->colors != NULL && tl->length > 0) {
+                /* Render spans with character-specific ANSI SGR colors */
+                int span_start = 0;
+                int span_x = t->padding_x;
+                while (span_start < tl->length) {
+                    uint8_t c_idx = tl->colors[span_start];
+                    int span_end = span_start + 1;
+                    while (span_end < tl->length && tl->colors[span_end] == c_idx) {
+                        span_end++;
+                    }
+                    int span_len = span_end - span_start;
+                    char span_text[MAX_INPUT_LEN];
+                    if (span_len >= (int)sizeof(span_text)) span_len = (int)sizeof(span_text) - 1;
+                    memcpy(span_text, tl->text + span_start, (size_t)span_len);
+                    span_text[span_len] = '\0';
+
+                    unsigned long col = theme_color(t, (ThemeColorIndex)c_idx);
+                    draw_text(gui, span_x, render_y, span_text, col);
+                    span_x += span_len * t->font_width;
+                    span_start = span_end;
+                }
+            } else if (tl->type == LINE_TYPE_PROMPT) {
                 char *arrow = strstr(tl->text, "> ");
                 if (arrow) {
                     size_t pfx_len = (arrow - tl->text) + 2;
@@ -335,8 +379,6 @@ void gui_run_event_loop(GUI *gui) {
     int xfd = ConnectionNumber(gui->dpy);
 
     while (gui->shell->running) {
-        Tab *tab = shell_get_active_tab(gui->shell);
-
         /* Process pending X events first */
         while (XPending(gui->dpy)) {
             XEvent ev;
@@ -387,44 +429,72 @@ void gui_run_event_loop(GUI *gui) {
             gui_redraw(gui);
         }
 
-        /* Check for active child pipe or sleep in poll */
-        struct pollfd pfd[2];
+        /* Check for active child pipes across all tabs and poll */
+        struct pollfd pfd[1 + MAX_TABS];
+        int tab_map[1 + MAX_TABS];
         int nfds = 1;
         pfd[0].fd = xfd;
         pfd[0].events = POLLIN;
 
-        if (tab && tab->out_pipe_fd >= 0) {
-            pfd[1].fd = tab->out_pipe_fd;
-            pfd[1].events = POLLIN | POLLHUP | POLLERR;
-            nfds = 2;
+        for (int i = 0; i < gui->shell->num_tabs; i++) {
+            Tab *t = gui->shell->tabs[i];
+            if (t && t->out_pipe_fd >= 0) {
+                pfd[nfds].fd = t->out_pipe_fd;
+                pfd[nfds].events = POLLIN | POLLHUP | POLLERR;
+                tab_map[nfds] = i;
+                nfds++;
+            }
         }
 
         int poll_timeout = 50; /* 50ms responsive timeout */
         int pret = poll(pfd, (nfds_t)nfds, poll_timeout);
 
         if (pret > 0 && nfds > 1) {
-            if (pfd[1].revents & (POLLIN | POLLHUP | POLLERR)) {
-                char read_buf[4096];
-                ssize_t n = read(tab->out_pipe_fd, read_buf, sizeof(read_buf));
-                if (n > 0) {
-                    terminal_append_output_bytes(tab, read_buf, (size_t)n, false);
-                    gui->needs_redraw = true;
-                } else if (n == 0 || (n < 0 && errno != EAGAIN && errno != EINTR)) {
-                    /* EOF reached: child finished */
-                    close(tab->out_pipe_fd);
-                    tab->out_pipe_fd = -1;
-                    executor_reap_children(tab);
-                    tab->state = SHELL_STATE_READY;
-                    terminal_show_prompt(tab);
+            for (int i = 1; i < nfds; i++) {
+                if (pfd[i].revents & (POLLIN | POLLHUP | POLLERR)) {
+                    int t_idx = tab_map[i];
+                    Tab *t = gui->shell->tabs[t_idx];
+                    char read_buf[4096];
+                    ssize_t n = read(t->out_pipe_fd, read_buf, sizeof(read_buf));
+                    if (n > 0) {
+                        terminal_append_output_bytes(t, read_buf, (size_t)n, false);
+                        if (t_idx == gui->shell->active_tab_idx) {
+                            gui->needs_redraw = true;
+                        }
+                    } else if (n == 0 || (n < 0 && errno != EAGAIN && errno != EINTR)) {
+                        /* EOF reached: child finished */
+                        close(t->out_pipe_fd);
+                        t->out_pipe_fd = -1;
+                        executor_reap_children(t);
+                        t->state = SHELL_STATE_READY;
+                        terminal_show_prompt(t);
+                        if (t_idx == gui->shell->active_tab_idx) {
+                            gui->needs_redraw = true;
+                        }
+                    }
+                }
+            }
+        }
+
+        /* Check child reaping and exit requests across all tabs */
+        for (int i = 0; i < gui->shell->num_tabs; i++) {
+            Tab *t = gui->shell->tabs[i];
+            if (!t) continue;
+
+            if (t->running_pid > 0 && t->out_pipe_fd < 0) {
+                executor_reap_children(t);
+                t->state = SHELL_STATE_READY;
+                terminal_show_prompt(t);
+                if (i == gui->shell->active_tab_idx) {
                     gui->needs_redraw = true;
                 }
             }
-        } else if (tab && tab->running_pid > 0 && tab->out_pipe_fd < 0) {
-            /* Child exited without pipe */
-            executor_reap_children(tab);
-            tab->state = SHELL_STATE_READY;
-            terminal_show_prompt(tab);
-            gui->needs_redraw = true;
+
+            if (t->request_close) {
+                shell_close_tab(gui->shell, i);
+                gui->needs_redraw = true;
+                break;
+            }
         }
     }
 }

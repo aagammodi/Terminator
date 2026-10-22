@@ -1,9 +1,11 @@
 # Terminator build artifacts
 *.o
 *.a
+obj/
 terminator
 test_harness
 test_runner
+tests/test_tabs
 
 # Temporary and test artifacts
 tests/*.tmp

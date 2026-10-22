@@ -97,6 +97,14 @@ static int run_headless_shell(Shell *shell) {
             executor_reap_children(tab);
         }
         tab->state = SHELL_STATE_READY;
+
+        if (tab->request_close) {
+            shell_close_tab(shell, shell->active_tab_idx);
+            if (!shell->running) break;
+            tab = shell_get_active_tab(shell);
+            if (!tab) break;
+            tab->echo_to_stdout = true;
+        }
     }
 
     return tab->last_exit_status;

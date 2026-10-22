@@ -1,7 +1,31 @@
 #include "terminal.h"
 #include "util.h"
 #include "shell.h"
+#include "theme.h"
 #include <ctype.h>
+
+static ThemeColorIndex ansi_to_theme_color(int code, bool bright) {
+    (void)bright;
+    switch (code) {
+        case 30: return COLOR_SURFACE_ELEV;
+        case 31: return COLOR_ERROR_RED;
+        case 32: return COLOR_SOFT_GREEN;
+        case 33: return COLOR_WARM_ORANGE;
+        case 34: return COLOR_BLUE_ACCENT;
+        case 35: return COLOR_NEON_PINK;
+        case 36: return COLOR_ELECTRIC_CYAN;
+        case 37: return COLOR_FG_MAIN;
+        case 90: return COLOR_FG_SEC;
+        case 91: return COLOR_ERROR_RED;
+        case 92: return COLOR_SOFT_GREEN;
+        case 93: return COLOR_WARM_ORANGE;
+        case 94: return COLOR_BLUE_ACCENT;
+        case 95: return COLOR_NEON_PINK;
+        case 96: return COLOR_ELECTRIC_CYAN;
+        case 97: return COLOR_FG_MAIN;
+        default: return COLOR_FG_MAIN;
+    }
+}
 
 Tab *terminal_tab_create(int id, const char *initial_dir) {
     Tab *tab = xcalloc(1, sizeof(Tab));
@@ -20,6 +44,8 @@ Tab *terminal_tab_create(int id, const char *initial_dir) {
     tab->cursor = 0;
     tab->accumulated_cmd[0] = '\0';
     tab->in_continuation = false;
+    tab->shell = NULL;
+    tab->request_close = false;
 
     tab->line_capacity = INITIAL_LINE_CAPACITY;
     tab->num_lines = 0;
@@ -27,6 +53,7 @@ Tab *terminal_tab_create(int id, const char *initial_dir) {
 
     tab->partial_line[0] = '\0';
     tab->partial_len = 0;
+    tab->current_fg_color = COLOR_FG_MAIN;
 
     tab->scroll_offset = 0;
 
@@ -59,6 +86,7 @@ void terminal_tab_destroy(Tab *tab) {
 
     for (int i = 0; i < tab->num_lines; i++) {
         free(tab->lines[i].text);
+        free(tab->lines[i].colors);
     }
     free(tab->lines);
 
@@ -217,11 +245,12 @@ void terminal_history_next(Tab *tab) {
     tab->cursor = (int)strlen(tab->input);
 }
 
-void terminal_append_line(Tab *tab, const char *text, LineType type) {
+void terminal_append_line_with_colors(Tab *tab, const char *text, const uint8_t *colors, int len, LineType type) {
     if (!tab) return;
 
     if (tab->num_lines >= MAX_SCROLLBACK_LINES) {
         free(tab->lines[0].text);
+        free(tab->lines[0].colors);
         memmove(&tab->lines[0], &tab->lines[1], (tab->num_lines - 1) * sizeof(TerminalLine));
         tab->num_lines--;
     } else if (tab->num_lines >= tab->line_capacity) {
@@ -230,6 +259,14 @@ void terminal_append_line(Tab *tab, const char *text, LineType type) {
     }
 
     tab->lines[tab->num_lines].text = xstrdup(text ? text : "");
+    if (colors && len > 0) {
+        tab->lines[tab->num_lines].colors = xmalloc((size_t)len);
+        memcpy(tab->lines[tab->num_lines].colors, colors, (size_t)len);
+        tab->lines[tab->num_lines].length = len;
+    } else {
+        tab->lines[tab->num_lines].colors = NULL;
+        tab->lines[tab->num_lines].length = (int)strlen(tab->lines[tab->num_lines].text);
+    }
     tab->lines[tab->num_lines].type = type;
     tab->num_lines++;
 
@@ -237,6 +274,10 @@ void terminal_append_line(Tab *tab, const char *text, LineType type) {
     if (tab->scroll_offset > 0) {
         tab->scroll_offset++;
     }
+}
+
+void terminal_append_line(Tab *tab, const char *text, LineType type) {
+    terminal_append_line_with_colors(tab, text, NULL, 0, type);
 }
 
 static inline void safe_write_bytes(int fd, const char *buf, size_t len) {
@@ -263,7 +304,7 @@ void terminal_append_output_bytes(Tab *tab, const char *bytes, size_t len, bool 
                     tab->ansi_state = ANSI_STATE_ESC;
                 } else if (c == '\n') {
                     tab->partial_line[tab->partial_len] = '\0';
-                    terminal_append_line(tab, tab->partial_line, line_type);
+                    terminal_append_line_with_colors(tab, tab->partial_line, tab->partial_colors, tab->partial_len, line_type);
                     if (tab->echo_to_stdout) {
                         safe_write_bytes(target_fd, "\n", 1);
                     }
@@ -282,12 +323,14 @@ void terminal_append_output_bytes(Tab *tab, const char *bytes, size_t len, bool 
                         safe_write_bytes(target_fd, &c, 1);
                     }
                     if ((size_t)tab->partial_len + 1 < sizeof(tab->partial_line)) {
+                        tab->partial_colors[tab->partial_len] = tab->current_fg_color;
                         tab->partial_line[tab->partial_len++] = c;
                     } else {
                         /* Line buffer full, flush current segment */
                         tab->partial_line[tab->partial_len] = '\0';
-                        terminal_append_line(tab, tab->partial_line, line_type);
+                        terminal_append_line_with_colors(tab, tab->partial_line, tab->partial_colors, tab->partial_len, line_type);
                         tab->partial_len = 0;
+                        tab->partial_colors[tab->partial_len] = tab->current_fg_color;
                         tab->partial_line[tab->partial_len++] = c;
                     }
                 }
@@ -313,7 +356,34 @@ void terminal_append_output_bytes(Tab *tab, const char *bytes, size_t len, bool 
                     }
                 } else if (c >= 0x40 && c <= 0x7E) {
                     /* Final character of CSI sequence */
-                    if (c == 'J') {
+                    if (c == 'm') {
+                        /* SGR Color/Attribute code */
+                        if (tab->csi_len == 0) {
+                            tab->current_fg_color = COLOR_FG_MAIN;
+                        } else {
+                            char tmp[64];
+                            safe_strncpy(tmp, tab->csi_buf, sizeof(tmp));
+                            char *saveptr = NULL;
+                            char *tok = strtok_r(tmp, ";", &saveptr);
+                            bool bright = false;
+                            while (tok) {
+                                int val = atoi(tok);
+                                if (val == 0) {
+                                    tab->current_fg_color = COLOR_FG_MAIN;
+                                    bright = false;
+                                } else if (val == 1) {
+                                    bright = true;
+                                } else if (val >= 30 && val <= 37) {
+                                    tab->current_fg_color = (uint8_t)ansi_to_theme_color(val, bright);
+                                } else if (val == 39) {
+                                    tab->current_fg_color = COLOR_FG_MAIN;
+                                } else if (val >= 90 && val <= 97) {
+                                    tab->current_fg_color = (uint8_t)ansi_to_theme_color(val, true);
+                                }
+                                tok = strtok_r(NULL, ";", &saveptr);
+                            }
+                        }
+                    } else if (c == 'J') {
                         /* Erase in Display: 2J (screen), 3J (scrollback) */
                         if (strstr(tab->csi_buf, "2") || strstr(tab->csi_buf, "3") || tab->csi_len == 0) {
                             terminal_clear_screen(tab);
@@ -347,7 +417,7 @@ void terminal_flush_partial_line(Tab *tab, bool is_error) {
     if (tab->partial_len > 0) {
         tab->partial_line[tab->partial_len] = '\0';
         LineType line_type = is_error ? LINE_TYPE_ERROR : LINE_TYPE_OUTPUT;
-        terminal_append_line(tab, tab->partial_line, line_type);
+        terminal_append_line_with_colors(tab, tab->partial_line, tab->partial_colors, tab->partial_len, line_type);
         tab->partial_len = 0;
         tab->partial_line[0] = '\0';
     }
@@ -357,6 +427,7 @@ void terminal_clear_screen(Tab *tab) {
     if (!tab) return;
     for (int i = 0; i < tab->num_lines; i++) {
         free(tab->lines[i].text);
+        free(tab->lines[i].colors);
     }
     tab->num_lines = 0;
     tab->scroll_offset = 0;
@@ -365,6 +436,7 @@ void terminal_clear_screen(Tab *tab) {
     tab->ansi_state = ANSI_STATE_NORMAL;
     tab->csi_len = 0;
     tab->csi_buf[0] = '\0';
+    tab->current_fg_color = COLOR_FG_MAIN;
 }
 
 void terminal_scroll_up(Tab *tab, int lines) {

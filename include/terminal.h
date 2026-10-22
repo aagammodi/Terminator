@@ -27,13 +27,19 @@ typedef enum {
 
 typedef struct {
     char *text;
+    uint8_t *colors; /* Array of ThemeColorIndex for each character, or NULL */
+    int length;
     LineType type;
 } TerminalLine;
+
+struct Shell;
 
 typedef struct Tab {
     int id;
     char cwd[MAX_PATH_LEN];
     ShellState state;
+    struct Shell *shell; /* Parent shell reference */
+    bool request_close;  /* Set when tab requests exit */
     
     /* Input buffer and cursor */
     char input[MAX_INPUT_LEN];
@@ -50,12 +56,14 @@ typedef struct Tab {
     
     /* Partial line buffer for incremental stream reading */
     char partial_line[MAX_INPUT_LEN];
+    uint8_t partial_colors[MAX_INPUT_LEN];
     int partial_len;
     
     /* ANSI escape sequence parser state */
     AnsiState ansi_state;
     char csi_buf[64];
     int csi_len;
+    uint8_t current_fg_color;
     
     /* View / scrolling */
     int scroll_offset; /* 0 = bottom, >0 = scrolled up into history */
@@ -102,6 +110,7 @@ void terminal_history_next(Tab *tab);
 
 /* Scrollback and output operations */
 void terminal_append_line(Tab *tab, const char *text, LineType type);
+void terminal_append_line_with_colors(Tab *tab, const char *text, const uint8_t *colors, int len, LineType type);
 void terminal_append_output_bytes(Tab *tab, const char *bytes, size_t len, bool is_error);
 void terminal_flush_partial_line(Tab *tab, bool is_error);
 void terminal_clear_screen(Tab *tab);

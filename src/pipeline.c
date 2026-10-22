@@ -16,6 +16,12 @@ int pipeline_execute(Pipeline *pipeline, Tab *tab) {
 
     int n = pipeline->num_commands;
 
+    if (n > MAX_PIPELINE_CMDS) {
+        fprintf(stderr, "terminator: pipeline exceeds maximum stages (%d)\n", MAX_PIPELINE_CMDS);
+        tab->last_exit_status = 1;
+        return -1;
+    }
+
     /* Allocate pipeline pipes: n - 1 pipes */
     int pipes[MAX_PIPELINE_CMDS][2];
     for (int i = 0; i < n - 1; i++) {

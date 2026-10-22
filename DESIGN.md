@@ -62,31 +62,48 @@ Direct-to-window drawing often causes severe flickering during fast scrolling or
 3. Once rendering is complete, `XCopyArea` transfers the entire back-buffer Pixmap to the visible X11 window in one atomic screen refresh, followed by `XFlush`.
 4. When the window is resized (`ConfigureNotify`), the old Pixmap is freed and a new Pixmap is reallocated to match the updated geometry.
 
-### Responsive Non-Blocking Event Loop (poll)
-The heart of Terminator is an event-driven multiplexer that never busy-waits:
+### Responsive Multi-Tab Non-Blocking Event Loop (poll)
+The heart of Terminator is an event-driven multiplexer that never busy-waits. It monitors the X11 display socket alongside the capture pipes of **all** open tabs:
 
 ```c
-struct pollfd fds[2];
+struct pollfd fds[1 + MAX_TABS];
+int tab_map[1 + MAX_TABS];
+int nfds = 1;
 fds[0].fd = ConnectionNumber(dpy); /* X11 connection */
 fds[0].events = POLLIN;
 
-if (tab->out_pipe_fd >= 0) {
-    fds[1].fd = tab->out_pipe_fd;   /* Active command capture pipe */
-    fds[1].events = POLLIN | POLLHUP | POLLERR;
-    nfds = 2;
+/* Watch active output capture pipes across all tabs */
+for (int i = 0; i < shell->num_tabs; i++) {
+    Tab *t = shell->tabs[i];
+    if (t && t->out_pipe_fd >= 0) {
+        fds[nfds].fd = t->out_pipe_fd;
+        fds[nfds].events = POLLIN | POLLHUP | POLLERR;
+        tab_map[nfds] = i;
+        nfds++;
+    }
 }
 
 int pret = poll(fds, nfds, 50); /* 50ms responsive tick */
 ```
 
-- When the user presses a key or resizes the window, `fds[0]` wakes up `poll()`. Pending events are drained using `while (XPending(dpy)) { XNextEvent(...); }`.
-- When a running child process produces output, `fds[1]` wakes up `poll()`. `read()` reads incoming byte chunks and appends them to the tab's output model.
-- When the child process finishes and closes its write descriptors, `read()` returns 0 (EOF). Terminator detects this, closes the read-end descriptor, reaps all child processes via `waitpid()`, records `$?`, prints the return prompt, and requests a redraw.
+- When the user presses a key, clicks a tab or button, or resizes the window, `fds[0]` wakes up `poll()`. Pending events are drained using `while (XPending(dpy)) { XNextEvent(...); }`.
+- When any running child process produces output, `fds[i]` wakes up `poll()`. Bytes are read into that specific tab's buffer, so hidden background tabs keep collecting output asynchronously without freezing the GUI.
+- When a child process finishes and closes its write descriptors, `read()` returns 0 (EOF). Terminator detects this, closes the read-end descriptor, reaps all child processes via `waitpid()`, records `$?`, prints the return prompt on that tab, and requests a redraw if it is active.
 - If no events or pipes are active, `poll()` puts the process to sleep in the kernel (near 0% CPU usage).
 
 ---
 
 ## 3. Data Structures & Memory Management
+
+### TerminalLine with ANSI Color Spans
+```c
+typedef struct {
+    char *text;                         /* Character string */
+    uint8_t *colors;                    /* ThemeColorIndex per character (or NULL) */
+    int length;                         /* Character count */
+    LineType type;                      /* LINE_TYPE_NORMAL, PROMPT, CONTINUATION, ERROR */
+} TerminalLine;
+```
 
 ### Tab Structure (`struct Tab`)
 The tab data structure represents an isolated shell and terminal instance:
@@ -99,9 +116,11 @@ typedef enum {
 } ShellState;
 
 typedef struct Tab {
-    int id;                             /* Tab identifier (1, 2, ...) */
+    int id;                             /* Unique tab identifier (1, 2, ...) */
     char cwd[MAX_PATH_LEN];             /* Current working directory */
     ShellState state;                   /* Explicit lifecycle state */
+    struct Shell *shell;                /* Reference to parent shell */
+    bool request_close;                 /* Set when tab requests exit */
     
     /* Input line and cursor */
     char input[MAX_INPUT_LEN];          /* Active line being edited */
@@ -116,9 +135,11 @@ typedef struct Tab {
     int num_lines;                      /* Number of lines stored */
     int line_capacity;                  /* Capacity of line buffer */
     
-    /* Incremental stream parser */
+    /* Incremental stream parser with ANSI color state */
     char partial_line[MAX_INPUT_LEN];   /* Partial line received from pipe */
+    uint8_t partial_colors[MAX_INPUT_LEN]; /* Per-char ANSI color attribute */
     int partial_len;                    /* Current bytes in partial line */
+    uint8_t current_fg_color;           /* Active SGR foreground color */
     
     /* ANSI CSI escape-sequence parser */
     AnsiState ansi_state;

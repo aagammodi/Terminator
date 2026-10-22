@@ -121,7 +121,17 @@ def run_interactive_session():
     res_after = read_until("@terminator> ", timeout=1.0)
     check("Commands execute normally after clear", "after_clear_ok" in res_after, f"Output was: {repr(res_after)}")
 
-    # 9. Clean exit
+    # 9. Empty quoted strings preserved as distinct arguments
+    send_cmd('python3 -c "import sys; print(len(sys.argv), sys.argv[1])" "" "foo"')
+    res_quotes = read_until("@terminator> ", timeout=1.0)
+    check("Empty quotes preserved as distinct empty arguments", "3 " in res_quotes, f"Output was: {repr(res_quotes)}")
+
+    # 10. ANSI SGR escape sequence handling
+    send_cmd('printf "\\033[32mcolored_output_test\\033[0m\\n"')
+    res_sgr = read_until("@terminator> ", timeout=1.0)
+    check("ANSI SGR codes parsed cleanly without raw escape leaks", "colored_output_test" in res_sgr and "\033[32m" not in res_sgr, f"Output was: {repr(res_sgr)}")
+
+    # 11. Clean exit
     send_cmd("exit")
     time.sleep(0.1)
     os.close(master)

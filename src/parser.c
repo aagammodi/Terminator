@@ -253,6 +253,14 @@ Pipeline *parser_parse_pipeline(const char *cmd_line, int last_exit_status) {
             stage_str[stage_len] = '\0';
 
             /* Parse stage into Command */
+            if (pipeline->num_commands >= MAX_PIPELINE_CMDS) {
+                fprintf(stderr, "terminator: pipeline exceeds maximum stages (%d)\n", MAX_PIPELINE_CMDS);
+                free(stage_str);
+                pipeline_free(pipeline);
+                free(expanded);
+                return NULL;
+            }
+
             if (pipeline->num_commands >= pipeline->capacity) {
                 pipeline->capacity *= 2;
                 pipeline->commands = xrealloc(pipeline->commands, pipeline->capacity * sizeof(Command));

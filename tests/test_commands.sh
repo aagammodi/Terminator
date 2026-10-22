@@ -65,11 +65,22 @@ assert_session "exit status \$? after command not found" "notacommand_xyz\necho 
 assert_session "history displays recent commands" "echo cmd1\necho cmd2\nhistory\nexit" "echo cmd1"
 assert_session "history preserves sequence" "echo cmd1\necho cmd2\nhistory\nexit" "echo cmd2"
 
-assert_output "deferred built-in multiWatch stub" "multiWatch" "built-in deferred"
-assert_output "deferred built-in jobs stub" "jobs" "built-in deferred"
-assert_output "deferred built-in fg stub" "fg" "built-in deferred"
-assert_output "deferred built-in bg stub" "bg" "built-in deferred"
-assert_output "deferred built-in source stub" "source" "built-in deferred"
+assert_output "deferred built-in multiWatch stub" "multiWatch" "requires Tasks 6-11"
+assert_output "built-in fg no current job" "fg" "no current job"
+assert_output "built-in bg no current job" "bg" "no current job"
+assert_output "source missing argument reports error" "source" "filename argument required"
+
+# Test genuine script execution with source built-in
+TMP_SCRIPT=$(mktemp /tmp/terminator_test_script_XXXXXX.sh)
+cat << 'EOF' > "$TMP_SCRIPT"
+# This is a comment in the sourced script
+echo "sourced_script_executed_successfully"
+cd /tmp
+EOF
+
+assert_session "source executes commands and modifies shell cwd" "source $TMP_SCRIPT\npwd\nexit" "/tmp"
+assert_session "source prints command output" "source $TMP_SCRIPT\nexit" "sourced_script_executed_successfully"
+rm -f "$TMP_SCRIPT"
 
 echo "=== Task 2 Result: $PASS Passed, $FAIL Failed ==="
 if [ $FAIL -ne 0 ]; then

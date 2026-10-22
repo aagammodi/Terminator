@@ -82,6 +82,13 @@ assert_eq "Globbing expansion *.sh" "$out" "$exp"
 out=$($TERMINATOR -c 'echo "dollar: \$HOME escaped quote: \"hi\""')
 assert_eq "Escaped dollar and quote inside double quotes" "$out" 'dollar: $HOME escaped quote: "hi"'
 
+# 13. Empty quoted strings preserved as distinct arguments
+out=$($TERMINATOR -c 'python3 -c "import sys; print(len(sys.argv), repr(sys.argv[1]), repr(sys.argv[2]))" "" "bar"')
+assert_eq "Empty double quotes preserved as empty argument" "$out" "3 '' 'bar'"
+
+out=$($TERMINATOR -c "python3 -c 'import sys; print(len(sys.argv), repr(sys.argv[1]))' ''")
+assert_eq "Empty single quotes preserved as empty argument" "$out" "2 ''"
+
 echo "=== Task 3 Result: $PASS Passed, $FAIL Failed ==="
 if [ $FAIL -ne 0 ]; then
     exit 1

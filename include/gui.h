@@ -44,6 +44,11 @@ typedef struct GUI {
     Atom sel_prop_atom;
     char *clipboard_text;
     char *primary_text;
+
+    /* Native Terminal Blinking Cursor */
+    bool cursor_visible;
+    uint64_t last_cursor_blink_time;
+    bool has_focus;
 } GUI;
 
 typedef struct {
@@ -63,6 +68,9 @@ GUI *gui_create(Shell *shell, int width, int height);
 void gui_destroy(GUI *gui);
 void gui_run_event_loop(GUI *gui);
 void gui_redraw(GUI *gui);
+
+void gui_cursor_reset_blink(GUI *gui);
+uint64_t gui_get_time_ms(void);
 
 char *gui_get_selected_text(const GUI *gui, const Tab *tab);
 void gui_copy_selection(GUI *gui, Tab *tab);

@@ -6,6 +6,7 @@
 #include "history.h"
 #include "keybind.h"
 #include "multiwatch.h"
+#include "script.h"
 #include <stdio.h>
 #include <string.h>
 #include <errno.h>
@@ -142,96 +143,18 @@ static int builtin_source(const Command *cmd, Tab *tab) {
         snprintf(resolved_path, sizeof(resolved_path), "%s/%s", tab->cwd, filepath);
     }
 
-    FILE *fp = fopen(resolved_path, "r");
-    if (!fp) {
-        fp = fopen(filepath, "r");
-    }
-    if (!fp) {
-        fprintf(stderr, "terminator: source: %s: %s\n", filepath, strerror(errno));
-        return 1;
-    }
-
-    char line_buf[MAX_INPUT_LEN];
-    char acc_cmd[MAX_CMD_LEN] = {0};
-    int status = 0;
-
-    while (fgets(line_buf, sizeof(line_buf), fp)) {
-        size_t len = strlen(line_buf);
-        if (len > 0 && (line_buf[len - 1] == '\n' || line_buf[len - 1] == '\r')) {
-            line_buf[len - 1] = '\0';
-            len--;
-        }
-        if (len > 0 && line_buf[len - 1] == '\r') {
-            line_buf[len - 1] = '\0';
-            len--;
-        }
-
-        /* Check for comments outside multiline accumulation */
-        if (acc_cmd[0] == '\0') {
-            const char *p = line_buf;
-            while (*p && isspace((unsigned char)*p)) p++;
-            if (*p == '\0' || *p == '#') {
-                continue;
-            }
-        }
-
-        /* Check multiline continuation */
-        bool trailing_backslash = false;
-        if (len > 0 && line_buf[len - 1] == '\\') {
-            size_t bs_count = 0;
-            while (len > bs_count && line_buf[len - 1 - bs_count] == '\\') {
-                bs_count++;
-            }
-            if (bs_count % 2 == 1) {
-                trailing_backslash = true;
-            }
-        }
-
-        size_t acc_len = strlen(acc_cmd);
-        if (acc_len > 0) {
-            if (trailing_backslash) {
-                line_buf[len - 1] = '\0';
-                snprintf(acc_cmd + acc_len, sizeof(acc_cmd) - acc_len, "%s", line_buf);
-            } else {
-                snprintf(acc_cmd + acc_len, sizeof(acc_cmd) - acc_len, "\n%s", line_buf);
-            }
+    struct stat st;
+    const char *target = resolved_path;
+    if (stat(resolved_path, &st) != 0) {
+        if (stat(filepath, &st) == 0) {
+            target = filepath;
         } else {
-            if (trailing_backslash) {
-                line_buf[len - 1] = '\0';
-                safe_strncpy(acc_cmd, line_buf, sizeof(acc_cmd));
-            } else {
-                safe_strncpy(acc_cmd, line_buf, sizeof(acc_cmd));
-            }
-        }
-
-        if (trailing_backslash || parser_is_incomplete(acc_cmd)) {
-            continue;
-        }
-
-        /* Complete command: execute sequentially */
-        status = executor_run_line(tab, acc_cmd);
-        acc_cmd[0] = '\0';
-
-        /* Drain any synchronous child pipeline output */
-        if (tab->out_pipe_fd >= 0) {
-            char buf[4096];
-            ssize_t n;
-            while ((n = read(tab->out_pipe_fd, buf, sizeof(buf))) > 0) {
-                terminal_append_output_bytes(tab, buf, (size_t)n, false);
-            }
-            close(tab->out_pipe_fd);
-            tab->out_pipe_fd = -1;
-            executor_reap_children(tab);
-        }
-
-        status = tab->last_exit_status;
-        if (tab->request_close) {
-            break;
+            fprintf(stderr, "terminator: source: %s: %s\n", filepath, strerror(errno));
+            return 1;
         }
     }
 
-    fclose(fp);
-    return status;
+    return script_execute_file(tab, target, cmd->argc - 1, cmd->argv + 1, true, -1, -1);
 }
 
 static int builtin_jobs(const Command *cmd, Tab *tab) {

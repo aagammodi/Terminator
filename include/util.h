@@ -18,4 +18,7 @@ void path_compact_home(const char *path, char *out, size_t out_size);
 /* Log / debug helper */
 void term_log(const char *fmt, ...);
 
+/* Ensure askpass helper for graphical sudo */
+const char *ensure_askpass_helper(void);
+
 #endif /* TERMINATOR_UTIL_H */

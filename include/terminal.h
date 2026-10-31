@@ -102,6 +102,21 @@ typedef struct Tab {
     bool in_search_mode;
     char search_buf[MAX_INPUT_LEN];
     int search_cursor;
+
+    /* Task 10: Auto-completion state */
+    bool completion_active;
+    char completion_matches[64][MAX_PATH_LEN];
+    int completion_num_matches;
+    int completion_word_start;
+    int completion_word_end;
+    char completion_dir_part[MAX_PATH_LEN];
+
+    /* Tab shell variables */
+    struct {
+        char name[64];
+        char value[512];
+    } vars[128];
+    int num_vars;
     
     bool echo_to_stdout; /* For headless/test CLI modes */
 } Tab;
@@ -109,6 +124,11 @@ typedef struct Tab {
 /* Terminal lifecycle */
 Tab *terminal_tab_create(int id, const char *initial_dir, struct Shell *shell);
 void terminal_tab_destroy(Tab *tab);
+
+/* Tab variable operations */
+const char *terminal_get_var(const Tab *tab, const char *name);
+void terminal_set_var(Tab *tab, const char *name, const char *value);
+void terminal_unset_var(Tab *tab, const char *name);
 
 /* Input buffer operations */
 void terminal_insert_char(Tab *tab, char c);

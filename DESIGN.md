@@ -430,3 +430,100 @@ When the user executes history search (`history_search()`):
 - Triggers search prompt `Enter search term: ` directly on the terminal input line.
 - Supports live typing, Backspace, and cancellation via `Escape` or `Ctrl+C`.
 - Pressing `Enter` executes the 3-tier search engine, prints the matching results, and cleanly restores the prompt without auto-executing or logging the search query into history.
+
+---
+
+## 15. Native Terminal Blinking Cursor & Focus / Selection Architecture
+
+### Visual Geometry & Rendering
+- **Geometry**: The input caret is drawn as a slim 1–2px vertical rectangle (`caret_w = (font_width >= 9) ? 2 : 1`) matching the full font ascent + descent height.
+- **Theme Color**: Rendered using `#22D3EE` Electric Cyan accent color (`COLOR_CURSOR`).
+- **Memory Separation**: The caret is rendered strictly in the presentation layer (`gui_redraw()`). It is never inserted into `tab->input` or string storage, ensuring input strings remain standard C strings without control artifacts.
+
+### Blink Timing & Event-Driven Redraws
+- **Timer Interval**: 500ms blink cycle managed in `gui_redraw()` using monotonic millisecond timestamps (`gui_get_time_ms()`).
+- **Immediate Wakeup**: Any user action (`input_handle_key_press()`, mouse clicks, tab switching, history browsing) immediately invokes `gui_cursor_reset_blink(gui)`, setting `cursor_visible = true` and resetting the blink timer.
+- **Non-Busy Polling**: In `gui_run_event_loop()`, when the cursor is eligible to blink, the `poll()` timeout is dynamically clamped to the remaining time until the next 500ms transition (`500 - (now - last_blink)`), eliminating busy-waiting.
+
+### Multi-State Visibility Suppression
+Drawing of the caret is automatically suppressed under any of the following conditions:
+1. `!gui->has_focus`: Window lost X11 focus (`FocusOut`).
+2. `tab->state == SHELL_STATE_RUNNING`: Active foreground command or pipeline executing.
+3. `gui->sel_active || tab->sel_active`: Mouse selection highlight active.
+4. `gui->sel_dragging || tab->sel_dragging`: Active pointer dragging.
+5. `!gui->cursor_visible`: Cursor off-phase in blink cycle.
+
+### Mouse Click Insertion Point Calculation
+When clicking inside the visible input row, `input_handle_button_release()` maps mouse $X$ coordinate to character index:
+- Computes `prompt_len` from prompt width.
+- Clamps click to character boundaries: clicks before the input text place the cursor at index 0; clicks beyond text place it at `strlen(tab->input)`.
+- Clicks outside the input row or in scrollback history leave the active cursor undisturbed.
+
+---
+
+## 16. File-name Auto-completion Engine (Task 10)
+
+### Token Boundary Detection
+- In `autocomplete_handle_tab()`, the cursor position in `tab->input` is analyzed backwards.
+- Tracks quoting state (single and double quotes) and shell delimiters (` `, `\t`, `|`, `>`, `<`, `;`, `&`).
+- Splits the token into directory path prefix (`dir_part`) and match prefix (`file_part`).
+- Supports tilde expansion (`~`), relative paths (`src/`), absolute paths (`/etc/`), and hidden entries (`.git`).
+
+### Directory Enumeration & Matching
+- Scans candidate directory via POSIX `opendir()` and `readdir()`.
+- Filters directory entries matching `file_part` using `strncmp()` (case-sensitive).
+- Omits hidden files unless `file_part` explicitly begins with `.`.
+- Sorts matches alphabetically using `qsort()`.
+
+### Completion State Machine
+1. **Case A (Unique Single Match)**:
+   - Completes the word directly.
+   - Inspects entry using `stat()`. If `S_ISDIR(st.st_mode)`, automatically appends a trailing `/`.
+   - Advances cursor past completed token, preserving any trailing line suffix.
+2. **Case B (Longest Common Prefix Extension)**:
+   - If multiple entries match and share a common prefix longer than what was typed, extends the word to the Longest Common Prefix (LCP).
+   - Cursor updates to the end of the extended prefix; completion choice state remains inactive.
+3. **Case C (Ambiguous Matches / Disambiguation Menu)**:
+   - If multiple entries match with no further common prefix, activates `tab->completion_active = true`.
+   - Formats a compact, numbered list: `1. alpha.txt  2. beta.txt`.
+   - Appends line to terminal scrollback.
+   - User typing a digit `1`..`9` triggers `autocomplete_handle_choice()`, replacing the token with the selected file (and trailing `/` if directory).
+   - Any other keystroke or action cancels ambiguous selection state via `autocomplete_cancel()`.
+
+---
+
+## 17. Internal Bash Script Interpreter & AST Execution Engine (Task 11)
+
+### Execution Model & Invocation Forms
+Terminator executes scripts through its own native recursive-descent interpreter without invoking `/bin/bash` or `execvp("bash", ...)`:
+- Invocation Form A: `./script.sh [args...]` or `path/to/script.sh`
+- Invocation Form B: `bash script.sh [args...]`
+- Invocation Form C: `source script.sh [args...]` or `. script.sh`
+- Binary Discrimination: Inspects file headers to distinguish compiled ELF binaries (`\x7f\x45\x4c\x46`) from text scripts.
+
+### Phase 1: Static Pre-Execution Validation
+Before executing any command, `script_validate_file()` validates the entire script syntax:
+1. **Logical Line Reconstruction**: Handles comments (`#`), trailing backslash continuations (`\`), and multiline quoted blocks (`'...'`, `"..."`). Detects unexpected EOF with unclosed quotes.
+2. **Control Flow Validation**: Validates balanced `if` ... `elif` ... `else` ... `fi` nesting blocks. Rejects unclosed `if`, orphaned `elif`/`else`/`fi`, and malformed control branches.
+3. **Test Condition Validation**: Validates syntax within `[ ... ]` brackets, ensuring test operators (`-eq`, `-gt`, `=`, `-f`, `-d`) receive exact operand counts.
+4. **Zero-Side-Effect Guarantee**: Any syntax error reports `line <N>: syntax error` and aborts execution immediately. **No preceding commands are executed** (validated with marker file creation tests).
+
+### Phase 2: AST Construction & Execution
+Once validated, `script_execute_file()` transforms statements into an Abstract Syntax Tree (AST):
+- **`Stmt` Types**:
+  - `STMT_CMD`: Arbitrary shell command, pipeline, or redirection.
+  - `STMT_ASSIGN`: Variable assignment `NAME=value`.
+  - `STMT_IF`: Conditional block containing branches and bodies.
+  - `STMT_EXIT`: Script termination with exit status `exit [n]`.
+- **Positional Parameters**:
+  - Sets `$0` (script path), `$1`..`$9` (arguments), and `$#` (argument count) in `ScriptVarContext`.
+  - Nested AST statement evaluator supports `$VAR`, `${VAR}`, `$?`, and `$$`.
+- **Conditionals & Test Operators**:
+  - Evaluates test expressions:
+    - `-eq`, `-gt`: Integer numeric comparisons.
+    - `=`: String equality comparison.
+    - `-f`: Regular file existence check (`stat()` + `S_ISREG`).
+    - `-d`: Directory existence check (`stat()` + `S_ISDIR`).
+- **Context Scoping**:
+  - Direct execution (`./script.sh`, `bash script.sh`): Executes in an isolated subshell environment; script variables do not pollute tab environment.
+  - Sourcing (`source script.sh`, `. script.sh`): Executes in current tab context; variables and working directory updates persist directly in the calling tab.

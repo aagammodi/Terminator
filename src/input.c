@@ -6,6 +6,7 @@
 #include "util.h"
 #include "ipc.h"
 #include "keybind.h"
+#include "autocomplete.h"
 #include <X11/Xutil.h>
 #include <X11/keysym.h>
 #include <X11/Xatom.h>
@@ -22,6 +23,14 @@ void input_handle_key_event(XKeyEvent *event, GUI *gui, Shell *shell, bool *need
 
     *needs_redraw = true;
 
+    if (gui) {
+        gui_cursor_reset_blink(gui);
+        if (gui->sel_active || tab->sel_active) {
+            gui->sel_active = false;
+            tab->sel_active = false;
+        }
+    }
+
     char str[64];
     KeySym ksym = NoSymbol;
     int len = XLookupString(event, str, sizeof(str) - 1, &ksym, NULL);
@@ -30,6 +39,22 @@ void input_handle_key_event(XKeyEvent *event, GUI *gui, Shell *shell, bool *need
     }
 
     bool is_ctrl = (event->state & ControlMask) != 0;
+    bool is_alt = (event->state & Mod1Mask) != 0;
+
+    /* Handle numbered selection if completion choice list is active */
+    if (tab->completion_active) {
+        if (!is_ctrl && !is_alt && ksym >= XK_1 && ksym <= XK_9) {
+            int choice = (int)(ksym - XK_0);
+            if (choice <= tab->completion_num_matches) {
+                if (autocomplete_handle_choice(tab, choice)) {
+                    if (gui) gui_cursor_reset_blink(gui);
+                    *needs_redraw = true;
+                    return;
+                }
+            }
+        }
+        autocomplete_cancel(tab);
+    }
 
     /* If a foreground command or application is currently running */
     if (tab->state == SHELL_STATE_RUNNING) {
@@ -382,6 +407,14 @@ void input_handle_key_event(XKeyEvent *event, GUI *gui, Shell *shell, bool *need
             terminal_scroll_down(tab, 10);
             break;
 
+        case XK_Tab:
+            if (autocomplete_handle_tab(tab)) {
+                if (gui) gui_cursor_reset_blink(gui);
+                *needs_redraw = true;
+                return;
+            }
+            break;
+
         default:
             /* Printable characters */
             if (len > 0 && (unsigned char)str[0] >= 32 && (unsigned char)str[0] != 127) {
@@ -542,8 +575,10 @@ void input_handle_button_release(XButtonEvent *event, GUI *gui) {
         }
         if (gui->sel_dragging) {
             gui->sel_dragging = false;
+            Tab *tab = shell_get_active_tab(gui->shell);
+            if (tab) tab->sel_dragging = false;
+
             if (gui->sel_active) {
-                Tab *tab = shell_get_active_tab(gui->shell);
                 if (tab) {
                     char *sel_text = gui_get_selected_text(gui, tab);
                     if (sel_text && *sel_text) {
@@ -553,6 +588,54 @@ void input_handle_button_release(XButtonEvent *event, GUI *gui) {
                         XFlush(gui->dpy);
                     } else {
                         free(sel_text);
+                    }
+                }
+            } else {
+                /* Click without drag: place insertion cursor if clicked in active prompt/input line */
+                if (tab && tab->state != SHELL_STATE_RUNNING && tab->scroll_offset == 0) {
+                    int bar_h = gui->theme.top_bar_height;
+                    int term_top = bar_h + gui->theme.padding_y;
+                    int stat_y = gui->height - gui->theme.status_bar_height;
+                    int term_bottom = stat_y - gui->theme.padding_y;
+                    int line_h = gui->theme.font_height + 6;
+                    if (line_h < 14) line_h = 18;
+
+                    int total_rows = tab->num_lines + 1;
+                    int visible_rows = (term_bottom - term_top) / line_h;
+                    if (visible_rows <= 0) visible_rows = 1;
+                    int start_row = total_rows - visible_rows;
+                    if (start_row < 0) start_row = 0;
+
+                    int vis_r = (event->y - term_top) / line_h;
+                    int clicked_r = start_row + vis_r;
+
+                    if (clicked_r == tab->num_lines && event->x >= gui->theme.padding_x) {
+                        int prompt_len = 0;
+                        if (tab->in_search_mode) {
+                            prompt_len = 19;
+                        } else if (tab->state == SHELL_STATE_CONTINUATION) {
+                            prompt_len = 2;
+                        } else {
+                            const char *user = getenv("USER");
+                            if (!user || user[0] == '\0') user = "user";
+                            prompt_len = (int)strlen(user) + 13;
+                        }
+
+                        int clicked_col = (event->x - gui->theme.padding_x + (gui->theme.font_width / 2)) / gui->theme.font_width;
+                        int char_idx = clicked_col - prompt_len;
+                        if (char_idx < 0) char_idx = 0;
+                        int max_idx = tab->in_search_mode ? (int)strlen(tab->search_buf) : (int)strlen(tab->input);
+                        if (char_idx > max_idx) char_idx = max_idx;
+
+                        if (tab->in_search_mode) {
+                            tab->search_cursor = char_idx;
+                        } else {
+                            tab->cursor = char_idx;
+                        }
+
+                        gui->sel_active = false;
+                        tab->sel_active = false;
+                        gui_cursor_reset_blink(gui);
                     }
                 }
             }

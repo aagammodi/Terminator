@@ -213,6 +213,10 @@ int main(int argc, char **argv) {
     /* Initialize Key Bindings */
     keybind_init();
 
+    if (force_headless || eval_cmd || getenv("DISPLAY") == NULL || !isatty(STDIN_FILENO)) {
+        setenv("TERMINATOR_HEADLESS", "1", 1);
+    }
+
     /* Initialize Shell with 1 Tab in requested architecture mode */
     Shell *shell = shell_create(NULL, use_process_mode);
     Tab *tab = shell_get_active_tab(shell);
@@ -280,6 +284,9 @@ int main(int argc, char **argv) {
         shell_destroy(shell);
         return code;
     }
+
+    /* Prepare GUI askpass helper for sudo */
+    ensure_askpass_helper();
 
     /* Create X11 GUI */
     GUI *gui = gui_create(shell, 960, 640);

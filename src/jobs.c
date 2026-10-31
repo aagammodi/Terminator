@@ -164,13 +164,20 @@ void jobs_update_status(JobTable *table, struct Tab *tab) {
             pid_t r = waitpid(pid, &status, WNOHANG | WUNTRACED | WCONTINUED);
             if (r == pid) {
                 if (WIFSTOPPED(status)) {
-                    j->state = JOB_STATE_STOPPED;
-                    j->is_foreground = false;
-                    if (table->current_id != j->id) {
-                        table->previous_id = table->current_id;
-                        table->current_id = j->id;
+                    int stopsig = WSTOPSIG(status);
+                    if (stopsig == SIGTTOU || stopsig == SIGTTIN) {
+                        kill(-pid, SIGKILL);
+                        waitpid(pid, NULL, 0);
+                        j->pids[p] = 0;
+                    } else {
+                        j->state = JOB_STATE_STOPPED;
+                        j->is_foreground = false;
+                        if (table->current_id != j->id) {
+                            table->previous_id = table->current_id;
+                            table->current_id = j->id;
+                        }
+                        alive_count++;
                     }
-                    alive_count++;
                 } else if (WIFCONTINUED(status)) {
                     j->state = JOB_STATE_RUNNING;
                     alive_count++;

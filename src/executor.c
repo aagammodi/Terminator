@@ -5,6 +5,7 @@
 #include "util.h"
 #include "ipc.h"
 #include "multiwatch.h"
+#include "script.h"
 #include <sys/wait.h>
 #include <poll.h>
 #include <signal.h>
@@ -30,7 +31,14 @@ void executor_reap_children(Tab *tab) {
                 } else if (WIFSIGNALED(status)) {
                     tab->last_exit_status = 128 + WTERMSIG(status);
                 } else if (WIFSTOPPED(status)) {
-                    tab->last_exit_status = 128 + WSTOPSIG(status);
+                    int stopsig = WSTOPSIG(status);
+                    if (stopsig == SIGTTOU || stopsig == SIGTTIN) {
+                        kill(-pid, SIGKILL);
+                        waitpid(pid, NULL, 0);
+                        tab->last_exit_status = 1;
+                    } else {
+                        tab->last_exit_status = 128 + stopsig;
+                    }
                 } else {
                     tab->last_exit_status = 1;
                 }
@@ -43,11 +51,191 @@ void executor_reap_children(Tab *tab) {
     tab->foreground_pgid = 0;
 }
 
-static bool is_forbidden_command(const char *cmd) {
-    if (!cmd) return false;
-    const char *base = strrchr(cmd, '/');
-    base = base ? base + 1 : cmd;
-    return (strcmp(base, "nano") == 0);
+static const char *get_external_terminal_emulator(void) {
+    static const char *candidates[] = {
+        "/usr/bin/x-terminal-emulator",
+        "/usr/bin/gnome-terminal",
+        "/usr/bin/xterm",
+        "/usr/bin/xfce4-terminal",
+        "/usr/bin/konsole",
+        "/usr/bin/alacritty",
+        "/usr/bin/kitty"
+    };
+    for (size_t i = 0; i < sizeof(candidates) / sizeof(candidates[0]); i++) {
+        if (access(candidates[i], X_OK) == 0) {
+            return candidates[i];
+        }
+    }
+    return NULL;
+}
+
+static bool is_interactive_apt(const Command *cmd, int start_idx) {
+    if (!cmd || start_idx >= cmd->argc) return false;
+    for (int i = start_idx + 1; i < cmd->argc; i++) {
+        const char *arg = cmd->argv[i];
+        if (arg[0] == '-') continue; /* skip flags */
+        if (strcmp(arg, "install") == 0 ||
+            strcmp(arg, "remove") == 0 ||
+            strcmp(arg, "purge") == 0 ||
+            strcmp(arg, "upgrade") == 0 ||
+            strcmp(arg, "dist-upgrade") == 0 ||
+            strcmp(arg, "full-upgrade") == 0 ||
+            strcmp(arg, "autoremove") == 0 ||
+            strcmp(arg, "reinstall") == 0) {
+            return true;
+        }
+        return false;
+    }
+    return false;
+}
+
+static bool command_needs_pause_on_exit(const Command *cmd) {
+    if (!cmd || cmd->argc == 0 || !cmd->argv || !cmd->argv[0]) return false;
+    const char *base = strrchr(cmd->argv[0], '/');
+    base = base ? base + 1 : cmd->argv[0];
+
+    int target_idx = 0;
+    if (strcmp(base, "sudo") == 0) {
+        for (int i = 1; i < cmd->argc; i++) {
+            if (cmd->argv[i][0] != '-') {
+                target_idx = i;
+                break;
+            }
+        }
+        if (target_idx > 0 && target_idx < cmd->argc) {
+            base = strrchr(cmd->argv[target_idx], '/');
+            base = base ? base + 1 : cmd->argv[target_idx];
+        }
+    }
+
+    if (strcmp(base, "apt") == 0 ||
+        strcmp(base, "apt-get") == 0 ||
+        strcmp(base, "dpkg") == 0 ||
+        strcmp(base, "dpkg-reconfigure") == 0 ||
+        strcmp(base, "aptitude") == 0) {
+        return true;
+    }
+    return false;
+}
+
+static bool is_tui_command(const Command *cmd) {
+    if (!cmd || cmd->argc == 0 || !cmd->argv || !cmd->argv[0]) return false;
+    const char *base = strrchr(cmd->argv[0], '/');
+    base = base ? base + 1 : cmd->argv[0];
+
+    int target_idx = 0;
+    if (strcmp(base, "sudo") == 0) {
+        /* Check if sudo is invoking an interactive shell (-i, -s) */
+        for (int i = 1; i < cmd->argc; i++) {
+            if (strcmp(cmd->argv[i], "-i") == 0 || strcmp(cmd->argv[i], "-s") == 0) {
+                return true;
+            }
+            if (cmd->argv[i][0] != '-') {
+                target_idx = i;
+                break;
+            }
+        }
+        if (target_idx == 0 || target_idx >= cmd->argc) {
+            return false;
+        }
+        base = strrchr(cmd->argv[target_idx], '/');
+        base = base ? base + 1 : cmd->argv[target_idx];
+    }
+
+    if (strcmp(base, "su") == 0) {
+        return true;
+    }
+
+    /* Interactive package managers */
+    if (strcmp(base, "apt") == 0 ||
+        strcmp(base, "apt-get") == 0 ||
+        strcmp(base, "aptitude") == 0) {
+        if (is_interactive_apt(cmd, target_idx)) {
+            return true;
+        }
+    }
+    if (strcmp(base, "dpkg") == 0 ||
+        strcmp(base, "dpkg-reconfigure") == 0) {
+        return true;
+    }
+
+    /* Pagers & manual pages */
+    if (strcmp(base, "less") == 0 ||
+        strcmp(base, "more") == 0 ||
+        strcmp(base, "man") == 0 ||
+        strcmp(base, "info") == 0 ||
+        strcmp(base, "view") == 0) {
+        return true;
+    }
+
+    /* If 'top' is called with batch mode flag (-b), it's a streaming command */
+    if (strcmp(base, "top") == 0) {
+        for (int i = (target_idx > 0 ? target_idx + 1 : 1); i < cmd->argc; i++) {
+            if (strcmp(cmd->argv[i], "-b") == 0 || strncmp(cmd->argv[i], "-b", 2) == 0) {
+                return false; /* top in batch mode streams to stdout */
+            }
+        }
+        return true;
+    }
+
+    if (strcmp(base, "htop") == 0 ||
+        strcmp(base, "nano") == 0 ||
+        strcmp(base, "vim") == 0 ||
+        strcmp(base, "vi") == 0 ||
+        strcmp(base, "emacs") == 0) {
+        return true;
+    }
+
+    return false;
+}
+
+static void command_wrap_external_terminal(Command *cmd, const char *term_bin) {
+    if (!cmd || !term_bin) return;
+    int old_argc = cmd->argc;
+    char **old_argv = cmd->argv;
+
+    bool is_gnome_direct = (strstr(term_bin, "gnome-terminal") != NULL &&
+                            strstr(term_bin, "wrapper") == NULL &&
+                            strstr(term_bin, "emulator") == NULL);
+
+    bool needs_pause = command_needs_pause_on_exit(cmd);
+
+    /*
+     * If pause is needed on exit (e.g. apt purge / install), wrap in:
+     *   sh -c '"$@"; status=$?; printf "\n[Process completed - press Enter to close] "; read -r _; exit $status' terminator_runner <args...>
+     */
+    int pause_args = needs_pause ? 4 : 0;
+    int emulator_args = is_gnome_direct ? 3 : 2; /* gnome-terminal --wait -- vs term -e */
+
+    int new_argc = emulator_args + pause_args + old_argc;
+    int new_cap = new_argc + 4;
+    char **new_argv = xcalloc((size_t)new_cap, sizeof(char *));
+
+    int idx = 0;
+    new_argv[idx++] = xstrdup(term_bin);
+    if (is_gnome_direct) {
+        new_argv[idx++] = xstrdup("--wait");
+        new_argv[idx++] = xstrdup("--");
+    } else {
+        new_argv[idx++] = xstrdup("-e");
+    }
+
+    if (needs_pause) {
+        new_argv[idx++] = xstrdup("sh");
+        new_argv[idx++] = xstrdup("-c");
+        new_argv[idx++] = xstrdup("\"$@\"; status=$?; printf \"\\n[Process completed - press Enter to close] \"; read -r _; exit $status");
+        new_argv[idx++] = xstrdup("terminator_runner");
+    }
+
+    for (int i = 0; i < old_argc; i++) {
+        new_argv[idx++] = old_argv[i];
+    }
+    new_argv[new_argc] = NULL;
+
+    free(old_argv);
+    cmd->argv = new_argv;
+    cmd->argc = new_argc;
+    cmd->argv_capacity = new_cap;
 }
 
 int executor_run_line(Tab *tab, const char *cmd_line) {
@@ -78,15 +266,57 @@ int executor_run_line(Tab *tab, const char *cmd_line) {
         return 0;
     }
 
-    /* Check for forbidden command (nano) */
-    for (int i = 0; i < pipeline->num_commands; i++) {
-        if (pipeline->commands[i].argc > 0 && is_forbidden_command(pipeline->commands[i].argv[0])) {
-            const char *msg = "terminator: nano: command forbidden\n";
-            terminal_append_output_bytes(tab, msg, strlen(msg), true);
+    /* Check for full-screen interactive TUI commands (top, htop, nano, vim, vi) */
+    if (pipeline->num_commands == 1 && pipeline->commands[0].argc > 0 &&
+        is_tui_command(&pipeline->commands[0])) {
+        const char *term_bin = get_external_terminal_emulator();
+        bool is_headless = (tab->echo_to_stdout || getenv("TERMINATOR_HEADLESS") != NULL || getenv("DISPLAY") == NULL);
+        bool can_spawn_gui = (term_bin != NULL && !is_headless);
+
+        if (can_spawn_gui) {
+            char note[256];
+            snprintf(note, sizeof(note), "[Terminator: Running '%s' in dedicated terminal window]\n",
+                     pipeline->commands[0].argv[0]);
+            terminal_append_output_bytes(tab, note, strlen(note), false);
+            command_wrap_external_terminal(&pipeline->commands[0], term_bin);
+            goto execute_external_pipeline;
+        } else {
+            /* Headless / test / no-display fallback */
+            const char *cmd_name = pipeline->commands[0].argv[0];
+            const char *base = strrchr(cmd_name, '/');
+            base = base ? base + 1 : cmd_name;
+            char err_msg[256];
+            if (strcmp(base, "nano") == 0) {
+                snprintf(err_msg, sizeof(err_msg), "terminator: nano: command forbidden\n");
+            } else if (strcmp(base, "top") == 0 || strcmp(base, "htop") == 0) {
+                snprintf(err_msg, sizeof(err_msg), "terminator: %s: interactive TUI requires graphical display (use '%s -b -n 1' for batch output)\n", base, base);
+            } else {
+                snprintf(err_msg, sizeof(err_msg), "terminator: %s: interactive TUI command requires graphical display\n", base);
+            }
+            terminal_append_output_bytes(tab, err_msg, strlen(err_msg), true);
             tab->last_exit_status = 1;
             pipeline_free(pipeline);
             return -1;
         }
+    }
+
+    /* Check for script invocation (./script.sh, bash script.sh, source script.sh) */
+    char script_path[MAX_PATH_LEN * 2];
+    bool is_source = false;
+    if (pipeline->num_commands == 1 && pipeline->commands[0].argc > 0 &&
+        script_is_script_invocation(&pipeline->commands[0], tab->cwd, script_path, sizeof(script_path), &is_source)) {
+        Command *cmd = &pipeline->commands[0];
+        int saved_stdin = -1, saved_stdout = -1;
+        if (cmd->output_file) {
+            redirection_apply_in_parent(cmd, &saved_stdin, &saved_stdout);
+        }
+        ret = script_execute_file(tab, script_path, cmd->argc, cmd->argv, is_source, -1, -1);
+        if (cmd->output_file) {
+            redirection_restore_in_parent(saved_stdin, saved_stdout);
+        }
+        tab->last_exit_status = ret;
+        pipeline_free(pipeline);
+        return ret;
     }
 
     /* Check for single built-in command */
@@ -164,6 +394,7 @@ int executor_run_line(Tab *tab, const char *cmd_line) {
         return 0;
     }
 
+execute_external_pipeline:;
     /* External command or pipeline: execute */
     bool is_bg = pipeline->is_background;
     ret = pipeline_execute(pipeline, tab);
@@ -228,17 +459,61 @@ int executor_run_line_worker(Tab *tab, const char *cmd_line, int read_ipc_fd, in
         return 0;
     }
 
-    /* Check for forbidden command (nano) */
-    for (int i = 0; i < pipeline->num_commands; i++) {
-        if (pipeline->commands[i].argc > 0 && is_forbidden_command(pipeline->commands[i].argv[0])) {
-            const char *msg = "terminator: nano: command forbidden\n";
-            ipc_send_msg(write_ipc_fd, IPC_MSG_OUTPUT, msg, (uint32_t)strlen(msg));
+    /* Check for full-screen interactive TUI commands (top, htop, nano, vim, vi) */
+    if (pipeline->num_commands == 1 && pipeline->commands[0].argc > 0 &&
+        is_tui_command(&pipeline->commands[0])) {
+        const char *term_bin = get_external_terminal_emulator();
+        bool is_headless = (tab->echo_to_stdout || getenv("TERMINATOR_HEADLESS") != NULL || getenv("DISPLAY") == NULL);
+        bool can_spawn_gui = (term_bin != NULL && !is_headless);
+
+        if (can_spawn_gui) {
+            char note[256];
+            snprintf(note, sizeof(note), "[Terminator: Running '%s' in dedicated terminal window]\n",
+                     pipeline->commands[0].argv[0]);
+            ipc_send_msg(write_ipc_fd, IPC_MSG_OUTPUT, note, (uint32_t)strlen(note));
+            command_wrap_external_terminal(&pipeline->commands[0], term_bin);
+            goto execute_external_worker_pipeline;
+        } else {
+            /* Headless / test / no-display fallback */
+            const char *cmd_name = pipeline->commands[0].argv[0];
+            const char *base = strrchr(cmd_name, '/');
+            base = base ? base + 1 : cmd_name;
+            char err_msg[256];
+            if (strcmp(base, "nano") == 0) {
+                snprintf(err_msg, sizeof(err_msg), "terminator: nano: command forbidden\n");
+            } else if (strcmp(base, "top") == 0 || strcmp(base, "htop") == 0) {
+                snprintf(err_msg, sizeof(err_msg), "terminator: %s: interactive TUI requires graphical display (use '%s -b -n 1' for batch output)\n", base, base);
+            } else {
+                snprintf(err_msg, sizeof(err_msg), "terminator: %s: interactive TUI command requires graphical display\n", base);
+            }
+            ipc_send_msg(write_ipc_fd, IPC_MSG_OUTPUT, err_msg, (uint32_t)strlen(err_msg));
             tab->last_exit_status = 1;
+            pipeline_free(pipeline);
             int status = 1;
             ipc_send_msg(write_ipc_fd, IPC_MSG_PROMPT, &status, sizeof(status));
-            pipeline_free(pipeline);
             return -1;
         }
+    }
+
+    /* Check for script invocation (./script.sh, bash script.sh, source script.sh) */
+    char script_path[MAX_PATH_LEN * 2];
+    bool is_source = false;
+    if (pipeline->num_commands == 1 && pipeline->commands[0].argc > 0 &&
+        script_is_script_invocation(&pipeline->commands[0], tab->cwd, script_path, sizeof(script_path), &is_source)) {
+        Command *cmd = &pipeline->commands[0];
+        int saved_stdin = -1, saved_stdout = -1;
+        if (cmd->output_file) {
+            redirection_apply_in_parent(cmd, &saved_stdin, &saved_stdout);
+        }
+        ret = script_execute_file(tab, script_path, cmd->argc, cmd->argv, is_source, read_ipc_fd, write_ipc_fd);
+        if (cmd->output_file) {
+            redirection_restore_in_parent(saved_stdin, saved_stdout);
+        }
+        tab->last_exit_status = ret;
+        pipeline_free(pipeline);
+        int status = tab->last_exit_status;
+        ipc_send_msg(write_ipc_fd, IPC_MSG_PROMPT, &status, sizeof(status));
+        return ret;
     }
 
     /* Check for single built-in command */
@@ -324,6 +599,7 @@ int executor_run_line_worker(Tab *tab, const char *cmd_line, int read_ipc_fd, in
         return 0;
     }
 
+execute_external_worker_pipeline:;
     /* External command or pipeline */
     bool is_bg = pipeline->is_background;
     ret = pipeline_execute(pipeline, tab);
@@ -477,7 +753,15 @@ worker_monitor_job:
                 pid_t r = waitpid(pid, &status, WNOHANG | WUNTRACED | WCONTINUED);
                 if (r == pid) {
                     if (WIFSTOPPED(status)) {
-                        any_stopped = true;
+                        int stopsig = WSTOPSIG(status);
+                        if (stopsig == SIGTTOU || stopsig == SIGTTIN) {
+                            kill(-pid, SIGKILL);
+                            waitpid(pid, NULL, 0);
+                            tab->pipeline_pids[i] = 0;
+                            tab->last_exit_status = 1;
+                        } else {
+                            any_stopped = true;
+                        }
                     } else if (WIFEXITED(status)) {
                         if (i == tab->num_pipeline_pids - 1) {
                             tab->last_exit_status = WEXITSTATUS(status);

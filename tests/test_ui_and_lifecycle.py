@@ -212,7 +212,23 @@ def run_interactive_session(extra_args=None, mode_name="Thread Mode"):
     res_hist = read_until("@terminator> ", timeout=1.5)
     check("Built-in 'history' lists numbered chronological commands", "sleep 15" in res_hist and "jobs" in res_hist, f"Output was: {repr(res_hist)}")
 
-    # 18. Clean exit
+    # 18. Task 11: Bash script execution over PTY (internal interpreter)
+    script_tmp = f"/tmp/term_pty_script_{os.getpid()}_{time.time_ns()}.sh"
+    with open(script_tmp, "w") as sf:
+        sf.write("#!/bin/bash\nSCR_VAR=\"pty_script_ok\"\necho \"status: $SCR_VAR\"\n")
+    os.chmod(script_tmp, 0o755)
+
+    send_cmd(f"bash {script_tmp}")
+    res_scr = read_until("@terminator> ", timeout=2.5)
+    check("Task 11: 'bash script.sh' executes internal interpreter", "status: pty_script_ok" in res_scr, f"Output was: {repr(res_scr)}")
+
+    send_cmd(f"source {script_tmp}")
+    res_src = read_until("@terminator> ", timeout=2.5)
+    check("Task 11: 'source script.sh' executes internal interpreter", "status: pty_script_ok" in res_src, f"Output was: {repr(res_src)}")
+    if os.path.exists(script_tmp):
+        os.remove(script_tmp)
+
+    # 19. Clean exit
     send_cmd("exit")
     time.sleep(0.1)
     os.close(master)

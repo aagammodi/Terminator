@@ -202,6 +202,46 @@ It features a custom-built GUI window, genuine shell lexer and parser, process o
     3. **Priority 3 (Case C — No Match, $L_{\max} \le 2$)**: If the longest contiguous common substring is 2 characters or fewer, displays `No match for search term in history`.
   - Returns cleanly to prompt, restores active editing state, does NOT execute the command automatically, and does not record the search prompt or query in history.
 
+### Native Terminal Blinking Cursor & Focus / Mouse Selection Behavior
+- **Slim Neon Caret**: Standard 1–2px slim vertical insertion caret drawn in `#22D3EE` Electric Cyan accent color, spanning full font height.
+- **Strict In-Memory Separation**: The caret is purely a graphical viewport artifact and is **never** inserted into the tab's input buffer or string memory, eliminating corruption.
+- **Blink Interval & Reactive Reset**: Configured with a 500ms blink timer via `gui_cursor_reset_blink()`. Blinking immediately restarts and shows the cursor on any keystroke, arrow navigation, editing command, mouse click, or tab switch.
+- **State-Aware Visibility Constraints**:
+  - **Focus-Aware**: Hides cursor and suspends blinking when the Terminator window loses X11 focus (`FocusOut`), resuming automatically on `FocusIn`.
+  - **Execution Guard**: Cursor is automatically hidden while commands or pipelines are executing (`SHELL_STATE_RUNNING`), reappearing only when the prompt returns.
+  - **Selection Hiding**: When mouse text selection is active or being dragged (`sel_active || sel_dragging`), the caret is hidden to ensure clean visual readability.
+- **Mouse Click Insertion Positioning**: Clicking within the prompt/input line calculates character boundary geometry accounting for prompt width, positioning the insertion point precisely at the clicked character. Clicking in the scrollback area preserves the cursor position.
+
+### Task 10 — File-name Auto-completion
+- **Directory Path & Prefix Detection**: Pressing `Tab` isolates the token immediately before the cursor, supporting relative, absolute, and tilde (`~`) paths as well as hidden files/directories starting with `.`.
+- **Suffix Preservation**: Mid-line completion seamlessly preserves the suffix of the command line after the cursor.
+- **Single Unique Match**: Directly completes the word and advances the cursor. If the completed path is a directory (`S_ISDIR`), a trailing `/` is automatically appended.
+- **Longest Common Prefix (LCP)**: If multiple entries match, extends the typed prefix to the longest common substring shared by all matches without displaying a menu.
+- **Numbered Disambiguation Menu**: When multiple matches share no further prefix, displays an alphabetically sorted numbered list (e.g. `1. alpha.txt  2. beta.txt`), placing the tab into choice completion state.
+- **Choice Selection (1–9)**: Typing a single numeric digit (`1..9`) completes the corresponding entry (appending `/` if a directory) and returns to normal editing without executing the command.
+- **Per-Tab Isolation**: Completion state, match lists, and directory buffers are strictly isolated per tab.
+
+### Task 11 — Internal Bash Script Interpreter
+- **Native Implementation**: Entirely implemented in native C without delegating to `/bin/bash`, `system()`, or `popen()`.
+- **Supported Invocation Forms**:
+  - Executable script: `./script.sh [args...]` or `path/to/script.sh [args...]`
+  - Explicit bash call: `bash script.sh [args...]`
+  - Current-context sourcing: `source script.sh [args...]` or `. script.sh [args...]`
+  - Binary discrimination: Distinguishes script files from compiled ELF binaries via header magic bytes (`\x7f\x45\x4c\x46`).
+- **Two-Phase Architecture**:
+  - **Phase 1 — Static Validation**: Pre-parses and validates the entire script before executing any command. Validates matching `if`/`elif`/`else`/`fi` control flow, test brackets `[ ... ]`, and quotation balance.
+  - **Strict Syntax Safety**: Any syntax error reports the script filename and line number and aborts execution immediately. **No command preceding the error is ever executed** (verified via marker file test).
+  - **Phase 2 — AST Execution**: Executes the validated Abstract Syntax Tree.
+- **Supported Grammar & Features**:
+  - Comments: Full-line (`# comment`) and inline (`cmd # comment`).
+  - Positional arguments: `$0` (script path), `$1`..`$9`, and `$#` (argument count).
+  - Variables: Assignment `VAR=val` and expansion `$VAR`, `${VAR}`.
+  - Exit code propagation: Command exit codes and explicit `exit [n]` statements update `$?`.
+  - Conditionals: `if`, `elif`, `else`, `fi`, including nested conditional blocks.
+  - Test expressions: Supports `[ $a -eq $b ]`, `[ $a -gt $b ]`, `[ "$a" = "$b" ]`, `[ -f file ]`, and `[ -d dir ]`.
+  - Pipelines and Redirection: Arbitrary pipelines (`cmd1 | cmd2`) and redirections (`<`, `>`, `>>`) inside script bodies.
+  - Context scoping: `source` modifies the calling tab's variables and working directory; direct execution (`./script.sh`, `bash script.sh`) executes in an isolated subshell context.
+
 ---
 
 ## 2. Dependencies & Installation

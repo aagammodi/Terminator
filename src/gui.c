@@ -10,6 +10,20 @@
 #include <unistd.h>
 #include <poll.h>
 #include <sys/wait.h>
+#include <time.h>
+
+uint64_t gui_get_time_ms(void) {
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return (uint64_t)ts.tv_sec * 1000ULL + (uint64_t)(ts.tv_nsec / 1000000ULL);
+}
+
+void gui_cursor_reset_blink(GUI *gui) {
+    if (!gui) return;
+    gui->cursor_visible = true;
+    gui->last_cursor_blink_time = gui_get_time_ms();
+    gui->needs_redraw = true;
+}
 
 static void draw_text(GUI *gui, int x, int y, const char *text, unsigned long color) {
     if (!gui || !text || text[0] == '\0') return;
@@ -201,7 +215,7 @@ GUI *gui_create(Shell *shell, int width, int height) {
     /* Create Window */
     XSetWindowAttributes swa;
     swa.background_pixel = theme_color(&gui->theme, COLOR_BG);
-    swa.event_mask = ExposureMask | KeyPressMask | ButtonPressMask | ButtonReleaseMask | Button1MotionMask | StructureNotifyMask;
+    swa.event_mask = ExposureMask | KeyPressMask | ButtonPressMask | ButtonReleaseMask | Button1MotionMask | StructureNotifyMask | FocusChangeMask;
 
     gui->win = XCreateWindow(
         dpy, root,
@@ -254,6 +268,11 @@ GUI *gui_create(Shell *shell, int width, int height) {
     gui->utf8_string = utf8_string;
     gui->targets_atom = XInternAtom(dpy, "TARGETS", False);
     gui->sel_prop_atom = XInternAtom(dpy, "TERMINATOR_SELECTION", False);
+
+    /* Blinking Cursor State */
+    gui->cursor_visible = true;
+    gui->last_cursor_blink_time = gui_get_time_ms();
+    gui->has_focus = true;
 
     XMapWindow(dpy, gui->win);
     XFlush(dpy);
@@ -589,6 +608,15 @@ void gui_redraw(GUI *gui) {
         } else if (show_input_row) {
             int curr_col = 0;
 
+            bool should_draw_cursor = (gui->has_focus &&
+                                       gui->cursor_visible &&
+                                       !gui->sel_active &&
+                                       !gui->sel_dragging &&
+                                       !tab->sel_active &&
+                                       !tab->sel_dragging &&
+                                       tab->state != SHELL_STATE_RUNNING);
+            int caret_w = (t->font_width >= 9) ? 2 : 1;
+
             if (tab->in_search_mode) {
                 const char *search_pfx = "Enter search term: ";
                 int pfx_len = (int)strlen(search_pfx);
@@ -597,14 +625,10 @@ void gui_redraw(GUI *gui) {
 
                 draw_text_selected(gui, curr_col, render_y, tab->search_buf, theme_color(t, COLOR_FG_MAIN), sel_c1, sel_c2, has_sel);
 
-                int cursor_x = t->padding_x + (curr_col + tab->search_cursor) * t->font_width;
-                int cursor_y = render_y - t->font_ascent;
-                fill_rect(gui, cursor_x, cursor_y, t->font_width, t->font_height, theme_color(t, COLOR_CURSOR));
-
-                char under_char = tab->search_buf[tab->search_cursor];
-                if (under_char != '\0') {
-                    char ch_str[2] = { under_char, '\0' };
-                    draw_text(gui, cursor_x, render_y, ch_str, theme_color(t, COLOR_BG));
+                if (should_draw_cursor) {
+                    int cursor_x = t->padding_x + (curr_col + tab->search_cursor) * t->font_width;
+                    int cursor_y = render_y - t->font_ascent;
+                    fill_rect(gui, cursor_x, cursor_y, caret_w, t->font_height, theme_color(t, COLOR_CURSOR));
                 }
             } else if (tab->state == SHELL_STATE_CONTINUATION) {
                 draw_text_selected(gui, curr_col, render_y, "> ", theme_color(t, COLOR_WARM_ORANGE), sel_c1, sel_c2, has_sel);
@@ -612,14 +636,10 @@ void gui_redraw(GUI *gui) {
 
                 draw_text_selected(gui, curr_col, render_y, tab->input, theme_color(t, COLOR_FG_MAIN), sel_c1, sel_c2, has_sel);
 
-                int cursor_x = t->padding_x + (curr_col + tab->cursor) * t->font_width;
-                int cursor_y = render_y - t->font_ascent;
-                fill_rect(gui, cursor_x, cursor_y, t->font_width, t->font_height, theme_color(t, COLOR_CURSOR));
-
-                char under_char = tab->input[tab->cursor];
-                if (under_char != '\0') {
-                    char ch_str[2] = { under_char, '\0' };
-                    draw_text(gui, cursor_x, render_y, ch_str, theme_color(t, COLOR_BG));
+                if (should_draw_cursor) {
+                    int cursor_x = t->padding_x + (curr_col + tab->cursor) * t->font_width;
+                    int cursor_y = render_y - t->font_ascent;
+                    fill_rect(gui, cursor_x, cursor_y, caret_w, t->font_height, theme_color(t, COLOR_CURSOR));
                 }
             } else {
                 const char *user = getenv("USER");
@@ -635,14 +655,10 @@ void gui_redraw(GUI *gui) {
 
                 draw_text_selected(gui, curr_col, render_y, tab->input, theme_color(t, COLOR_FG_MAIN), sel_c1, sel_c2, has_sel);
 
-                int cursor_x = t->padding_x + (curr_col + tab->cursor) * t->font_width;
-                int cursor_y = render_y - t->font_ascent;
-                fill_rect(gui, cursor_x, cursor_y, t->font_width, t->font_height, theme_color(t, COLOR_CURSOR));
-
-                char under_char = tab->input[tab->cursor];
-                if (under_char != '\0') {
-                    char ch_str[2] = { under_char, '\0' };
-                    draw_text(gui, cursor_x, render_y, ch_str, theme_color(t, COLOR_BG));
+                if (should_draw_cursor) {
+                    int cursor_x = t->padding_x + (curr_col + tab->cursor) * t->font_width;
+                    int cursor_y = render_y - t->font_ascent;
+                    fill_rect(gui, cursor_x, cursor_y, caret_w, t->font_height, theme_color(t, COLOR_CURSOR));
                 }
             }
         }
@@ -784,8 +800,39 @@ void gui_run_event_loop(GUI *gui) {
                     gui->needs_redraw = true;
                     break;
 
+                case FocusIn:
+                    gui->has_focus = true;
+                    gui_cursor_reset_blink(gui);
+                    break;
+
+                case FocusOut:
+                    gui->has_focus = false;
+                    gui->cursor_visible = false;
+                    gui->needs_redraw = true;
+                    break;
+
                 default:
                     break;
+            }
+        }
+
+        /* Check cursor blink state */
+        uint64_t now = gui_get_time_ms();
+        Tab *active_tab = shell_get_active_tab(gui->shell);
+        bool can_blink = (gui->has_focus &&
+                          active_tab &&
+                          active_tab->state != SHELL_STATE_RUNNING &&
+                          !gui->sel_active &&
+                          !gui->sel_dragging &&
+                          !active_tab->sel_active &&
+                          !active_tab->sel_dragging);
+
+        if (can_blink) {
+            uint64_t elapsed = now - gui->last_cursor_blink_time;
+            if (elapsed >= 500) {
+                gui->cursor_visible = !gui->cursor_visible;
+                gui->last_cursor_blink_time = now;
+                gui->needs_redraw = true;
             }
         }
 
@@ -811,6 +858,13 @@ void gui_run_event_loop(GUI *gui) {
         }
 
         int poll_timeout = 20; /* 20ms timeout for responsive UI */
+        if (can_blink) {
+            uint64_t elapsed = now - gui->last_cursor_blink_time;
+            int ms_to_blink = (elapsed < 500) ? (int)(500 - elapsed) : 0;
+            if (ms_to_blink > 0 && ms_to_blink < poll_timeout) {
+                poll_timeout = ms_to_blink;
+            }
+        }
         int pret = poll(pfd, (nfds_t)nfds, poll_timeout);
 
         if (pret > 0 && nfds > 1) {

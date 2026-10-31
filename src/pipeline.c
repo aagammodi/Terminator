@@ -1,6 +1,8 @@
 #include "pipeline.h"
 #include "redirection.h"
 #include "util.h"
+#include "script.h"
+#include "builtins.h"
 #include <unistd.h>
 #include <fcntl.h>
 #include <stdio.h>
@@ -8,6 +10,51 @@
 #include <string.h>
 #include <errno.h>
 #include <signal.h>
+
+static void prepare_command_sudo(Command *cmd) {
+    if (!cmd || cmd->argc == 0 || !cmd->argv || !cmd->argv[0]) return;
+    const char *base = strrchr(cmd->argv[0], '/');
+    base = base ? base + 1 : cmd->argv[0];
+    if (strcmp(base, "sudo") != 0) return;
+
+    /* Don't insert -A in headless/test mode */
+    bool is_headless = (getenv("TERMINATOR_HEADLESS") != NULL || getenv("DISPLAY") == NULL);
+    if (is_headless) return;
+
+    /* Check if already has -A or -S or help/version/invalidation flags */
+    for (int i = 1; i < cmd->argc; i++) {
+        if (strcmp(cmd->argv[i], "-A") == 0 ||
+            strcmp(cmd->argv[i], "-S") == 0 ||
+            strcmp(cmd->argv[i], "-h") == 0 ||
+            strcmp(cmd->argv[i], "--help") == 0 ||
+            strcmp(cmd->argv[i], "-V") == 0 ||
+            strcmp(cmd->argv[i], "--version") == 0 ||
+            strcmp(cmd->argv[i], "-k") == 0 ||
+            strcmp(cmd->argv[i], "-K") == 0) {
+            return;
+        }
+    }
+
+    ensure_askpass_helper();
+
+    /* Insert -A at index 1 */
+    int old_argc = cmd->argc;
+    char **old_argv = cmd->argv;
+    int new_argc = old_argc + 1;
+    int new_cap = new_argc + 2;
+    char **new_argv = xcalloc((size_t)new_cap, sizeof(char *));
+    new_argv[0] = old_argv[0];
+    new_argv[1] = xstrdup("-A");
+    for (int i = 1; i < old_argc; i++) {
+        new_argv[i + 1] = old_argv[i];
+    }
+    new_argv[new_argc] = NULL;
+    free(old_argv);
+
+    cmd->argv = new_argv;
+    cmd->argc = new_argc;
+    cmd->argv_capacity = new_cap;
+}
 
 int pipeline_execute(Pipeline *pipeline, Tab *tab) {
     if (!pipeline || pipeline->num_commands == 0 || !tab) {
@@ -54,6 +101,7 @@ int pipeline_execute(Pipeline *pipeline, Tab *tab) {
 
     for (int i = 0; i < n; i++) {
         Command *cmd = &pipeline->commands[i];
+        prepare_command_sudo(cmd);
 
         pid_t pid = fork();
         if (pid < 0) {
@@ -154,6 +202,16 @@ int pipeline_execute(Pipeline *pipeline, Tab *tab) {
             /* 5. Execute command */
             if (cmd->argc == 0 || !cmd->argv || !cmd->argv[0]) {
                 _exit(0);
+            }
+
+            char script_path[MAX_PATH_LEN * 2];
+            bool is_source = false;
+            if (script_is_script_invocation(cmd, tab->cwd, script_path, sizeof(script_path), &is_source)) {
+                _exit(script_execute_file(tab, script_path, cmd->argc, cmd->argv, is_source, -1, -1));
+            }
+
+            if (builtin_is_builtin(cmd->argv[0])) {
+                _exit(builtin_execute(cmd, tab));
             }
 
             execvp(cmd->argv[0], cmd->argv);

@@ -99,3 +99,38 @@ void term_log(const char *fmt, ...) {
     vfprintf(stderr, fmt, args);
     va_end(args);
 }
+
+const char *ensure_askpass_helper(void) {
+    const char *existing = getenv("SUDO_ASKPASS");
+    if (existing && access(existing, X_OK) == 0) {
+        return existing;
+    }
+
+    static const char *askpass_path = "/tmp/.terminator_askpass";
+    if (access(askpass_path, X_OK) == 0) {
+        setenv("SUDO_ASKPASS", askpass_path, 1);
+        return askpass_path;
+    }
+
+    FILE *fp = fopen(askpass_path, "w");
+    if (!fp) return NULL;
+
+    fprintf(fp,
+        "#!/bin/sh\n"
+        "PROMPT=\"${1:-[Terminator] Authentication Required}\"\n"
+        "if [ -x /usr/bin/zenity ]; then\n"
+        "    exec /usr/bin/zenity --password --title=\"$PROMPT\"\n"
+        "elif [ -x /usr/bin/ssh-askpass ]; then\n"
+        "    exec /usr/bin/ssh-askpass \"$PROMPT\"\n"
+        "elif [ -x /usr/bin/kdialog ]; then\n"
+        "    exec /usr/bin/kdialog --password \"$PROMPT\"\n"
+        "elif [ -x /usr/bin/xmessage ]; then\n"
+        "    exec /usr/bin/xmessage -buttons OK:0,Cancel:1 \"$PROMPT\"\n"
+        "fi\n"
+        "exit 1\n");
+    fclose(fp);
+
+    chmod(askpass_path, 0755);
+    setenv("SUDO_ASKPASS", askpass_path, 1);
+    return askpass_path;
+}

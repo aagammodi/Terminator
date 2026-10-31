@@ -82,7 +82,49 @@ Tab *terminal_tab_create(int id, const char *initial_dir, Shell *shell) {
 
     jobs_init(&tab->jobs);
 
+    tab->completion_active = false;
+    tab->completion_num_matches = 0;
+    tab->num_vars = 0;
+
     return tab;
+}
+
+const char *terminal_get_var(const Tab *tab, const char *name) {
+    if (!tab || !name) return NULL;
+    for (int i = 0; i < tab->num_vars; i++) {
+        if (strcmp(tab->vars[i].name, name) == 0) {
+            return tab->vars[i].value;
+        }
+    }
+    return NULL;
+}
+
+void terminal_set_var(Tab *tab, const char *name, const char *value) {
+    if (!tab || !name) return;
+    for (int i = 0; i < tab->num_vars; i++) {
+        if (strcmp(tab->vars[i].name, name) == 0) {
+            safe_strncpy(tab->vars[i].value, value ? value : "", sizeof(tab->vars[i].value));
+            return;
+        }
+    }
+    if (tab->num_vars < 128) {
+        safe_strncpy(tab->vars[tab->num_vars].name, name, sizeof(tab->vars[tab->num_vars].name));
+        safe_strncpy(tab->vars[tab->num_vars].value, value ? value : "", sizeof(tab->vars[tab->num_vars].value));
+        tab->num_vars++;
+    }
+}
+
+void terminal_unset_var(Tab *tab, const char *name) {
+    if (!tab || !name) return;
+    for (int i = 0; i < tab->num_vars; i++) {
+        if (strcmp(tab->vars[i].name, name) == 0) {
+            for (int j = i; j < tab->num_vars - 1; j++) {
+                tab->vars[j] = tab->vars[j + 1];
+            }
+            tab->num_vars--;
+            return;
+        }
+    }
 }
 
 void terminal_tab_destroy(Tab *tab) {

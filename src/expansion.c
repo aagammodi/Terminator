@@ -1,8 +1,29 @@
 #include "expansion.h"
 #include "util.h"
 #include "executor.h"
+#include "terminal.h"
 #include <glob.h>
 #include <ctype.h>
+
+__thread ScriptVarContext *g_active_script_ctx = NULL;
+__thread struct Tab *g_active_expansion_tab = NULL;
+
+static const char *resolve_var_value(const char *name, const ScriptVarContext *ctx, const struct Tab *tab) {
+    if (!name || !*name) return "";
+    if (ctx) {
+        for (int j = 0; j < ctx->num_vars; j++) {
+            if (strcmp(ctx->vars[j], name) == 0) {
+                return ctx->vals[j];
+            }
+        }
+    }
+    if (tab) {
+        const char *tv = terminal_get_var(tab, name);
+        if (tv) return tv;
+    }
+    const char *ev = getenv(name);
+    return ev ? ev : "";
+}
 
 char *expansion_process_command_substitutions(const char *input, int last_exit_status) {
     if (!input) return NULL;
@@ -127,7 +148,14 @@ char *expansion_process_command_substitutions(const char *input, int last_exit_s
 }
 
 char *expansion_expand_variables(const char *input, int last_exit_status) {
+    return expansion_expand_variables_ex(input, last_exit_status, g_active_script_ctx, g_active_expansion_tab);
+}
+
+char *expansion_expand_variables_ex(const char *input, int last_exit_status, const ScriptVarContext *ctx, const struct Tab *tab) {
     if (!input) return NULL;
+
+    const ScriptVarContext *vctx = ctx ? ctx : g_active_script_ctx;
+    const struct Tab *vtab = tab ? tab : g_active_expansion_tab;
 
     size_t in_len = strlen(input);
     size_t out_cap = in_len * 2 + 64;
@@ -233,6 +261,40 @@ char *expansion_expand_variables(const char *input, int last_exit_status) {
                 continue;
             }
 
+            /* $# -> positional parameter count */
+            if (next == '#') {
+                char cnt_str[32];
+                int cnt = vctx ? vctx->argc : 0;
+                snprintf(cnt_str, sizeof(cnt_str), "%d", cnt);
+                size_t clen = strlen(cnt_str);
+                while (out_len + clen >= out_cap) {
+                    out_cap *= 2;
+                    out = xrealloc(out, out_cap);
+                }
+                memcpy(out + out_len, cnt_str, clen);
+                out_len += clen;
+                i++; /* skip '#' */
+                continue;
+            }
+
+            /* $0..$9 -> positional arguments */
+            if (isdigit((unsigned char)next)) {
+                int arg_idx = next - '0';
+                const char *val = "";
+                if (vctx && arg_idx <= vctx->argc && vctx->argv[arg_idx]) {
+                    val = vctx->argv[arg_idx];
+                }
+                size_t vlen = strlen(val);
+                while (out_len + vlen >= out_cap) {
+                    out_cap *= 2;
+                    out = xrealloc(out, out_cap);
+                }
+                memcpy(out + out_len, val, vlen);
+                out_len += vlen;
+                i++; /* skip digit */
+                continue;
+            }
+
             /* ${VAR} syntax */
             if (next == '{') {
                 size_t close_pos = i + 2;
@@ -245,8 +307,27 @@ char *expansion_expand_variables(const char *input, int last_exit_status) {
                     if (vlen < sizeof(var_name)) {
                         memcpy(var_name, input + i + 2, vlen);
                         var_name[vlen] = '\0';
-                        const char *val = getenv(var_name);
-                        if (!val) val = "";
+
+                        const char *val = "";
+                        char num_buf[32];
+                        if (strcmp(var_name, "?") == 0) {
+                            snprintf(num_buf, sizeof(num_buf), "%d", last_exit_status);
+                            val = num_buf;
+                        } else if (strcmp(var_name, "$") == 0) {
+                            snprintf(num_buf, sizeof(num_buf), "%d", (int)getpid());
+                            val = num_buf;
+                        } else if (strcmp(var_name, "#") == 0) {
+                            snprintf(num_buf, sizeof(num_buf), "%d", vctx ? vctx->argc : 0);
+                            val = num_buf;
+                        } else if (isdigit((unsigned char)var_name[0])) {
+                            int arg_idx = atoi(var_name);
+                            if (vctx && arg_idx <= vctx->argc && vctx->argv[arg_idx]) {
+                                val = vctx->argv[arg_idx];
+                            }
+                        } else {
+                            val = resolve_var_value(var_name, vctx, vtab);
+                        }
+
                         size_t val_len = strlen(val);
                         while (out_len + val_len >= out_cap) {
                             out_cap *= 2;
@@ -272,8 +353,7 @@ char *expansion_expand_variables(const char *input, int last_exit_status) {
                 if (vlen < sizeof(var_name)) {
                     memcpy(var_name, input + vstart, vlen);
                     var_name[vlen] = '\0';
-                    const char *val = getenv(var_name);
-                    if (!val) val = "";
+                    const char *val = resolve_var_value(var_name, vctx, vtab);
                     size_t val_len = strlen(val);
                     while (out_len + val_len >= out_cap) {
                         out_cap *= 2;

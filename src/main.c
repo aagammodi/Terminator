@@ -36,6 +36,22 @@ static void headless_sigint_handler(int sig) {
     }
 }
 
+static void headless_sigtstp_handler(int sig) {
+    (void)sig;
+    if (g_active_tab) {
+        if (g_active_tab->state == SHELL_STATE_RUNNING) {
+            if (g_active_tab->to_worker_pipe[1] >= 0) {
+                ipc_send_msg(g_active_tab->to_worker_pipe[1], IPC_MSG_TSTP, NULL, 0);
+            }
+            if (g_active_tab->foreground_pgid > 0) {
+                kill(-g_active_tab->foreground_pgid, SIGTSTP);
+            } else if (g_active_tab->running_pid > 0) {
+                kill(-g_active_tab->running_pid, SIGTSTP);
+            }
+        }
+    }
+}
+
 static void print_usage(const char *prog) {
     printf("Terminator — Custom Terminal Emulator & Shell (Phase 1)\n");
     printf("Usage:\n");
@@ -52,6 +68,7 @@ static int run_headless_shell(Shell *shell) {
 
     g_active_tab = tab;
     signal(SIGINT, headless_sigint_handler);
+    signal(SIGTSTP, headless_sigtstp_handler);
 
     tab->echo_to_stdout = true;
     bool interactive = isatty(STDIN_FILENO);

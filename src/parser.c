@@ -222,6 +222,38 @@ Pipeline *parser_parse_pipeline(const char *cmd_line, int last_exit_status) {
 
     Pipeline *pipeline = pipeline_create();
 
+    /* 2.5 Check for trailing unquoted background operator '&' */
+    int last_unquoted_amp_pos = -1;
+    bool scan_single = false;
+    bool scan_double = false;
+    for (int i = 0; expanded[i] != '\0'; i++) {
+        char sc = expanded[i];
+        if (sc == '\\' && !scan_single && expanded[i + 1] != '\0') {
+            i++;
+            continue;
+        } else if (sc == '\'' && !scan_double) {
+            scan_single = !scan_single;
+        } else if (sc == '"' && !scan_single) {
+            scan_double = !scan_double;
+        } else if (sc == '&' && !scan_single && !scan_double) {
+            last_unquoted_amp_pos = i;
+        }
+    }
+
+    if (last_unquoted_amp_pos >= 0) {
+        bool only_ws = true;
+        for (int i = last_unquoted_amp_pos + 1; expanded[i] != '\0'; i++) {
+            if (!isspace((unsigned char)expanded[i])) {
+                only_ws = false;
+                break;
+            }
+        }
+        if (only_ws) {
+            pipeline->is_background = true;
+            expanded[last_unquoted_amp_pos] = '\0';
+        }
+    }
+
     /* 3. Split by unquoted pipes | */
     const char *p = expanded;
     bool in_single = false;

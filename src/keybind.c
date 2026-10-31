@@ -24,6 +24,8 @@ static KeyBindingEntry g_bindings[] = {
     { ACTION_CLOSE_TAB_SHORTCUT, "close-tab-shortcut", "tab-close",         XK_w,         ControlMask | ShiftMask,    0, 0, false },
     { ACTION_PREV_TAB,           "prev-tab",           "tab-prev",          XK_Prior,     ControlMask,                0, 0, false },
     { ACTION_NEXT_TAB,           "next-tab",           "tab-next",          XK_Next,      ControlMask,                0, 0, false },
+    { ACTION_HISTORY_SEARCH,     "history-search",     "search-history",    XK_r,         ControlMask,                0, 0, false },
+    { ACTION_SUSPEND_JOB,        "suspend-job",        "stop-job",          XK_z,         ControlMask,                0, 0, false },
     { ACTION_NONE,               NULL,                 NULL,                0,            0,                          0, 0, false }
 };
 

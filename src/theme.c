@@ -15,11 +15,45 @@ static const char *neon_aurora_hex[COLOR_COUNT] = {
     [COLOR_SOFT_GREEN]     = "#A6E3A1",
     [COLOR_WARM_ORANGE]    = "#FAB387",
     [COLOR_ERROR_RED]      = "#F38BA8",
-    [COLOR_BORDER]         = "#484064",
-    [COLOR_SELECTION]      = "#40375F",
-    [COLOR_CURSOR]         = "#F0ABFC",
-    [COLOR_BLUE_ACCENT]    = "#60A5FA"
+    [COLOR_BORDER]             = "#484064",
+    [COLOR_SELECTION]          = "#40375F",
+    [COLOR_SELECTION_FG]       = "#08071A",
+    [COLOR_SELECTION_BORDER]   = "#00E5FF",
+    [COLOR_CURSOR]             = "#F0ABFC",
+    [COLOR_BLUE_ACCENT]        = "#60A5FA"
 };
+
+static unsigned long allocate_rgb_color(Display *dpy, int screen, int r, int g, int b) {
+    if (r < 0) {
+        r = 0;
+    } else if (r > 255) {
+        r = 255;
+    }
+    if (g < 0) {
+        g = 0;
+    } else if (g > 255) {
+        g = 255;
+    }
+    if (b < 0) {
+        b = 0;
+    } else if (b > 255) {
+        b = 255;
+    }
+
+    if (!dpy) return (unsigned long)((r << 16) | (g << 8) | b);
+
+    Colormap cmap = DefaultColormap(dpy, screen);
+    XColor xcolor;
+    xcolor.red = (unsigned short)(r * 257);
+    xcolor.green = (unsigned short)(g * 257);
+    xcolor.blue = (unsigned short)(b * 257);
+    xcolor.flags = DoRed | DoGreen | DoBlue;
+
+    if (XAllocColor(dpy, cmap, &xcolor)) {
+        return xcolor.pixel;
+    }
+    return (unsigned long)((r << 16) | (g << 8) | b);
+}
 
 static unsigned long allocate_hex_color(Display *dpy, int screen, const char *hex) {
     if (!dpy || !hex || hex[0] != '#' || strlen(hex) < 7) {
@@ -68,6 +102,26 @@ bool theme_init(Display *dpy, int screen, Theme *theme) {
         } else {
             theme->colors[i] = 0;
         }
+    }
+
+    /* Initialize horizontal selection gradient: Cyan (#00E5FF) -> Electric Blue (#4776FF) -> Vivid Violet (#A855F7) */
+    for (int i = 0; i < GRADIENT_STEPS; i++) {
+        float t_val = (float)i / (float)(GRADIENT_STEPS - 1);
+        int r, g, b;
+        if (t_val <= 0.5f) {
+            float sub_t = t_val / 0.5f;
+            /* Cyan: 0, 229, 255  ->  Electric Blue: 71, 118, 255 */
+            r = (int)(0 + sub_t * (71 - 0));
+            g = (int)(229 + sub_t * (118 - 229));
+            b = 255;
+        } else {
+            float sub_t = (t_val - 0.5f) / 0.5f;
+            /* Electric Blue: 71, 118, 255 -> Vivid Violet: 168, 85, 247 */
+            r = (int)(71 + sub_t * (168 - 71));
+            g = (int)(118 + sub_t * (85 - 118));
+            b = (int)(255 + sub_t * (247 - 255));
+        }
+        theme->selection_gradient[i] = allocate_rgb_color(dpy, screen, r, g, b);
     }
 
     theme->top_bar_height = 38;

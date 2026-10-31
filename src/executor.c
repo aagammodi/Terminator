@@ -20,7 +20,7 @@ void executor_reap_children(Tab *tab) {
         pid_t pid = tab->pipeline_pids[i];
         if (pid > 0) {
             int status = 0;
-            while (waitpid(pid, &status, 0) < 0) {
+            while (waitpid(pid, &status, WUNTRACED) < 0) {
                 if (errno == EINTR) continue;
                 break;
             }
@@ -29,6 +29,8 @@ void executor_reap_children(Tab *tab) {
                     tab->last_exit_status = WEXITSTATUS(status);
                 } else if (WIFSIGNALED(status)) {
                     tab->last_exit_status = 128 + WTERMSIG(status);
+                } else if (WIFSTOPPED(status)) {
+                    tab->last_exit_status = 128 + WSTOPSIG(status);
                 } else {
                     tab->last_exit_status = 1;
                 }
@@ -62,6 +64,8 @@ int executor_run_line(Tab *tab, const char *cmd_line) {
 
     /* Record command in history */
     terminal_history_add(tab, cmd_line);
+
+    int ret = 0;
 
     /* Parse pipeline */
     Pipeline *pipeline = parser_parse_pipeline(cmd_line, tab->last_exit_status);
@@ -150,14 +154,33 @@ int executor_run_line(Tab *tab, const char *cmd_line) {
             close(capture_pipe[0]);
         }
 
+        if (strcmp(cmd->argv[0], "fg") == 0 && tab->last_exit_status == 0 && tab->foreground_pgid > 0) {
+            pipeline_free(pipeline);
+            ret = 0;
+            goto sync_monitor_job;
+        }
+
         pipeline_free(pipeline);
         return 0;
     }
 
-    /* External command or pipeline: execute asynchronously */
-    int ret = pipeline_execute(pipeline, tab);
+    /* External command or pipeline: execute */
+    bool is_bg = pipeline->is_background;
+    ret = pipeline_execute(pipeline, tab);
     pipeline_free(pipeline);
 
+    if (is_bg) {
+        Job *j = jobs_add(&tab->jobs, tab->foreground_pgid, tab->pipeline_pids, tab->num_pipeline_pids, cmd_line, JOB_STATE_RUNNING, false, tab->out_pipe_fd);
+        char bg_msg[128];
+        snprintf(bg_msg, sizeof(bg_msg), "[%d] %d\n", j ? j->id : 1, (int)tab->foreground_pgid);
+        terminal_append_output_bytes(tab, bg_msg, strlen(bg_msg), false);
+        tab->foreground_pgid = -1;
+        tab->out_pipe_fd = -1;
+        tab->num_pipeline_pids = 0;
+        return 0;
+    }
+
+sync_monitor_job:
     if (ret == 0 && tab->out_pipe_fd >= 0) {
         char buf[4096];
         ssize_t n;
@@ -187,6 +210,8 @@ int executor_run_line_worker(Tab *tab, const char *cmd_line, int read_ipc_fd, in
 
     /* Record command in shared history */
     terminal_history_add(tab, cmd_line);
+
+    int ret = 0;
 
     /* Parse pipeline */
     Pipeline *pipeline = parser_parse_pipeline(cmd_line, tab->last_exit_status);
@@ -287,6 +312,11 @@ int executor_run_line_worker(Tab *tab, const char *cmd_line, int read_ipc_fd, in
             ipc_send_msg(write_ipc_fd, IPC_MSG_EXIT, NULL, 0);
         }
 
+        if (strcmp(cmd->argv[0], "fg") == 0 && tab->last_exit_status == 0 && tab->foreground_pgid > 0) {
+            pipeline_free(pipeline);
+            goto worker_monitor_job;
+        }
+
         int status = tab->last_exit_status;
         ipc_send_msg(write_ipc_fd, IPC_MSG_PROMPT, &status, sizeof(status));
 
@@ -295,7 +325,8 @@ int executor_run_line_worker(Tab *tab, const char *cmd_line, int read_ipc_fd, in
     }
 
     /* External command or pipeline */
-    int ret = pipeline_execute(pipeline, tab);
+    bool is_bg = pipeline->is_background;
+    ret = pipeline_execute(pipeline, tab);
     pipeline_free(pipeline);
 
     if (ret != 0) {
@@ -304,6 +335,22 @@ int executor_run_line_worker(Tab *tab, const char *cmd_line, int read_ipc_fd, in
         return ret;
     }
 
+    if (is_bg) {
+        Job *j = jobs_add(&tab->jobs, tab->foreground_pgid, tab->pipeline_pids, tab->num_pipeline_pids, cmd_line, JOB_STATE_RUNNING, false, tab->out_pipe_fd);
+        char bg_msg[128];
+        snprintf(bg_msg, sizeof(bg_msg), "[%d] %d\n", j ? j->id : 1, (int)tab->foreground_pgid);
+        ipc_send_msg(write_ipc_fd, IPC_MSG_OUTPUT, bg_msg, (uint32_t)strlen(bg_msg));
+
+        tab->foreground_pgid = -1;
+        tab->out_pipe_fd = -1;
+        tab->num_pipeline_pids = 0;
+
+        int status = 0;
+        ipc_send_msg(write_ipc_fd, IPC_MSG_PROMPT, &status, sizeof(status));
+        return 0;
+    }
+
+worker_monitor_job:
     /* Multiplex child output and IPC commands from GUI */
     while (1) {
         struct pollfd pfds[2];
@@ -357,6 +404,18 @@ int executor_run_line_worker(Tab *tab, const char *cmd_line, int read_ipc_fd, in
                                 kill(tab->pipeline_pids[i], SIGINT);
                             }
                         }
+                    } else if (hdr.type == IPC_MSG_TSTP) {
+                        /* Ctrl+Z from user: deliver SIGTSTP to foreground process group */
+                        if (tab->foreground_pgid > 0) {
+                            kill(-tab->foreground_pgid, SIGTSTP);
+                        } else if (tab->running_pid > 0) {
+                            kill(-tab->running_pid, SIGTSTP);
+                        }
+                        for (int i = 0; i < tab->num_pipeline_pids; i++) {
+                            if (tab->pipeline_pids[i] > 0) {
+                                kill(tab->pipeline_pids[i], SIGTSTP);
+                            }
+                        }
                     } else if (hdr.type == IPC_MSG_QUIT) {
                         /* Application or tab terminating: kill child immediately */
                         if (tab->foreground_pgid > 0) {
@@ -408,24 +467,30 @@ int executor_run_line_worker(Tab *tab, const char *cmd_line, int read_ipc_fd, in
             }
         }
 
-        /* Check if child processes have finished */
+        /* Check if child processes have finished or stopped */
         bool any_alive = false;
+        bool any_stopped = false;
         for (int i = 0; i < tab->num_pipeline_pids; i++) {
             pid_t pid = tab->pipeline_pids[i];
             if (pid > 0) {
                 int status = 0;
-                pid_t r = waitpid(pid, &status, WNOHANG);
+                pid_t r = waitpid(pid, &status, WNOHANG | WUNTRACED | WCONTINUED);
                 if (r == pid) {
-                    if (i == tab->num_pipeline_pids - 1) {
-                        if (WIFEXITED(status)) {
+                    if (WIFSTOPPED(status)) {
+                        any_stopped = true;
+                    } else if (WIFEXITED(status)) {
+                        if (i == tab->num_pipeline_pids - 1) {
                             tab->last_exit_status = WEXITSTATUS(status);
-                        } else if (WIFSIGNALED(status)) {
-                            tab->last_exit_status = 128 + WTERMSIG(status);
-                        } else {
-                            tab->last_exit_status = 1;
                         }
+                        tab->pipeline_pids[i] = 0;
+                    } else if (WIFSIGNALED(status)) {
+                        if (i == tab->num_pipeline_pids - 1) {
+                            tab->last_exit_status = 128 + WTERMSIG(status);
+                        }
+                        tab->pipeline_pids[i] = 0;
                     }
-                    tab->pipeline_pids[i] = 0;
+                } else if (r == 0) {
+                    any_alive = true;
                 } else if (r == -1 && errno == ECHILD) {
                     tab->pipeline_pids[i] = 0;
                 } else {
@@ -434,7 +499,42 @@ int executor_run_line_worker(Tab *tab, const char *cmd_line, int read_ipc_fd, in
             }
         }
 
+        if (any_stopped) {
+            /* Child process group was suspended (Ctrl+Z) */
+            Job *j = jobs_find_by_pgid(&tab->jobs, tab->foreground_pgid);
+            if (!j) {
+                j = jobs_add(&tab->jobs, tab->foreground_pgid, tab->pipeline_pids, tab->num_pipeline_pids, cmd_line, JOB_STATE_STOPPED, false, tab->out_pipe_fd);
+            } else {
+                j->state = JOB_STATE_STOPPED;
+                j->is_foreground = false;
+                if (tab->out_pipe_fd >= 0) j->out_pipe_fd = tab->out_pipe_fd;
+            }
+            if (j) {
+                if (tab->jobs.current_id != j->id) {
+                    tab->jobs.previous_id = tab->jobs.current_id;
+                    tab->jobs.current_id = j->id;
+                }
+                char stop_msg[MAX_CMD_LEN + 128];
+                snprintf(stop_msg, sizeof(stop_msg), "\n[%d]+ Stopped %s\n", j->id, j->cmd_line);
+                ipc_send_msg(write_ipc_fd, IPC_MSG_OUTPUT, stop_msg, (uint32_t)strlen(stop_msg));
+            }
+            tab->foreground_pgid = 0;
+            tab->out_pipe_fd = -1;
+            tab->num_pipeline_pids = 0;
+            tab->running_pid = -1;
+            tab->last_exit_status = 148; /* 128 + SIGTSTP */
+            break;
+        }
+
         if (!any_alive) {
+            if (tab->foreground_pgid > 0) {
+                Job *j = jobs_find_by_pgid(&tab->jobs, tab->foreground_pgid);
+                if (j) {
+                    j->state = JOB_STATE_DONE;
+                    j->is_foreground = false;
+                    j->exit_status = tab->last_exit_status;
+                }
+            }
             /* If pipe is still open, drain any remaining output before finishing */
             if (tab->out_pipe_fd >= 0) {
                 char buf[4096];

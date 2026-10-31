@@ -35,6 +35,92 @@ static void draw_line(GUI *gui, int x1, int y1, int x2, int y2, unsigned long co
     XDrawLine(gui->dpy, gui->back_buffer, gui->gc, x1, y1, x2, y2);
 }
 
+static void draw_selection_gradient(GUI *gui, int hx, int hy, int hw, int hh) {
+    if (!gui || hw <= 0 || hh <= 0) return;
+    Theme *t = &gui->theme;
+
+    int step_px = 2;
+    if (hw < 16) step_px = 1;
+    for (int x = 0; x < hw; x += step_px) {
+        int w = (x + step_px <= hw) ? step_px : (hw - x);
+        float frac = (hw > 1) ? ((float)x / (float)(hw - 1)) : 0.0f;
+        int idx = (int)(frac * (GRADIENT_STEPS - 1));
+        if (idx < 0) idx = 0;
+        if (idx >= GRADIENT_STEPS) idx = GRADIENT_STEPS - 1;
+
+        XSetForeground(gui->dpy, gui->gc, t->selection_gradient[idx]);
+        XFillRectangle(gui->dpy, gui->back_buffer, gui->gc, hx + x, hy, (unsigned int)w, (unsigned int)hh);
+    }
+
+    /* Subtle outline / border around selected region */
+    XSetForeground(gui->dpy, gui->gc, theme_color(t, COLOR_SELECTION_BORDER));
+    XDrawRectangle(gui->dpy, gui->back_buffer, gui->gc, hx, hy, (unsigned int)(hw > 1 ? hw - 1 : 1), (unsigned int)(hh > 1 ? hh - 1 : 1));
+}
+
+static bool get_row_selection_range(const GUI *gui, const Tab *tab, int r, int *out_c1, int *out_c2) {
+    bool active = tab ? tab->sel_active : gui->sel_active;
+    if (!active) return false;
+
+    int r1 = tab ? tab->sel_start_row : gui->sel_start_row;
+    int c1 = tab ? tab->sel_start_col : gui->sel_start_col;
+    int r2 = tab ? tab->sel_end_row : gui->sel_end_row;
+    int c2 = tab ? tab->sel_end_col : gui->sel_end_col;
+
+    if (r1 > r2 || (r1 == r2 && c1 > c2)) {
+        int tr = r1; r1 = r2; r2 = tr;
+        int tc = c1; c1 = c2; c2 = tc;
+    }
+
+    if (r < r1 || r > r2) return false;
+
+    if (r1 == r2) {
+        *out_c1 = c1;
+        *out_c2 = c2;
+    } else if (r == r1) {
+        *out_c1 = c1;
+        *out_c2 = 120;
+    } else if (r == r2) {
+        *out_c1 = 0;
+        *out_c2 = c2;
+    } else {
+        *out_c1 = 0;
+        *out_c2 = 120;
+    }
+
+    return (*out_c2 > *out_c1);
+}
+
+static void draw_text_selected(GUI *gui, int start_col, int render_y, const char *text, unsigned long normal_col, int sel_c1, int sel_c2, bool has_sel) {
+    if (!gui || !text || text[0] == '\0') return;
+    Theme *t = &gui->theme;
+    int len = (int)strlen(text);
+    if (!has_sel || sel_c2 <= sel_c1) {
+        draw_text(gui, t->padding_x + start_col * t->font_width, render_y, text, normal_col);
+        return;
+    }
+
+    int i = 0;
+    while (i < len) {
+        int col = start_col + i;
+        bool is_sel = (col >= sel_c1 && col < sel_c2);
+        int span_start = i;
+        while (i < len) {
+            int c_col = start_col + i;
+            bool c_sel = (c_col >= sel_c1 && c_col < sel_c2);
+            if (c_sel != is_sel) break;
+            i++;
+        }
+        int span_len = i - span_start;
+        char buf[MAX_INPUT_LEN];
+        if (span_len >= (int)sizeof(buf)) span_len = (int)sizeof(buf) - 1;
+        memcpy(buf, text + span_start, (size_t)span_len);
+        buf[span_len] = '\0';
+
+        unsigned long color = is_sel ? theme_color(t, COLOR_SELECTION_FG) : normal_col;
+        draw_text(gui, t->padding_x + (start_col + span_start) * t->font_width, render_y, buf, color);
+    }
+}
+
 bool gui_get_scrollbar_geom(const GUI *gui, const Tab *tab, ScrollbarGeom *geom) {
     if (!gui || !tab || !geom) return false;
 
@@ -446,23 +532,13 @@ void gui_redraw(GUI *gui) {
     int render_y = term_top + t->font_ascent;
 
     for (int r = start_row; r < start_row + visible_rows && r < total_rows; r++) {
-        if (gui->sel_active) {
-            int r1 = gui->sel_start_row, c1 = gui->sel_start_col;
-            int r2 = gui->sel_end_row, c2 = gui->sel_end_col;
-            if (r1 > r2 || (r1 == r2 && c1 > c2)) {
-                int tr = r1; r1 = r2; r2 = tr;
-                int tc = c1; c1 = c2; c2 = tc;
-            }
-            if (r >= r1 && r <= r2) {
-                int col_start = (r == r1) ? c1 : 0;
-                int col_end = (r == r2) ? c2 : 120;
-                if (col_end > col_start) {
-                    int hx = t->padding_x + col_start * t->font_width;
-                    int hw = (col_end - col_start) * t->font_width;
-                    int hy = render_y - t->font_ascent;
-                    fill_rect(gui, hx, hy, hw, line_h, theme_color(t, COLOR_SURFACE_ELEV));
-                }
-            }
+        int sel_c1 = 0, sel_c2 = 0;
+        bool has_sel = get_row_selection_range(gui, tab, r, &sel_c1, &sel_c2);
+        if (has_sel) {
+            int hx = t->padding_x + sel_c1 * t->font_width;
+            int hw = (sel_c2 - sel_c1) * t->font_width;
+            int hy = render_y - t->font_ascent;
+            draw_selection_gradient(gui, hx, hy, hw, line_h);
         }
 
         if (r < tab->num_lines) {
@@ -470,7 +546,6 @@ void gui_redraw(GUI *gui) {
 
             if (tl->colors != NULL && tl->length > 0) {
                 int span_start = 0;
-                int span_x = t->padding_x;
                 while (span_start < tl->length) {
                     uint8_t c_idx = tl->colors[span_start];
                     int span_end = span_start + 1;
@@ -484,8 +559,7 @@ void gui_redraw(GUI *gui) {
                     span_text[span_len] = '\0';
 
                     unsigned long col = theme_color(t, (ThemeColorIndex)c_idx);
-                    draw_text(gui, span_x, render_y, span_text, col);
-                    span_x += span_len * t->font_width;
+                    draw_text_selected(gui, span_start, render_y, span_text, col, sel_c1, sel_c2, has_sel);
                     span_start = span_end;
                 }
             } else if (tl->type == LINE_TYPE_PROMPT) {
@@ -496,53 +570,80 @@ void gui_redraw(GUI *gui) {
                     if (pfx_len < sizeof(pfx)) {
                         memcpy(pfx, tl->text, pfx_len);
                         pfx[pfx_len] = '\0';
-                        draw_text(gui, t->padding_x, render_y, pfx, theme_color(t, COLOR_ELECTRIC_CYAN));
-                        int cmd_x = t->padding_x + ((int)pfx_len * t->font_width);
-                        draw_text(gui, cmd_x, render_y, tl->text + pfx_len, theme_color(t, COLOR_FG_MAIN));
+                        draw_text_selected(gui, 0, render_y, pfx, theme_color(t, COLOR_ELECTRIC_CYAN), sel_c1, sel_c2, has_sel);
+                        draw_text_selected(gui, (int)pfx_len, render_y, tl->text + pfx_len, theme_color(t, COLOR_FG_MAIN), sel_c1, sel_c2, has_sel);
                     } else {
-                        draw_text(gui, t->padding_x, render_y, tl->text, theme_color(t, COLOR_ELECTRIC_CYAN));
+                        draw_text_selected(gui, 0, render_y, tl->text, theme_color(t, COLOR_ELECTRIC_CYAN), sel_c1, sel_c2, has_sel);
                     }
                 } else {
-                    draw_text(gui, t->padding_x, render_y, tl->text, theme_color(t, COLOR_ELECTRIC_CYAN));
+                    draw_text_selected(gui, 0, render_y, tl->text, theme_color(t, COLOR_ELECTRIC_CYAN), sel_c1, sel_c2, has_sel);
                 }
             } else if (tl->type == LINE_TYPE_CONTINUATION) {
-                draw_text(gui, t->padding_x, render_y, "> ", theme_color(t, COLOR_WARM_ORANGE));
-                int cmd_x = t->padding_x + (2 * t->font_width);
-                draw_text(gui, cmd_x, render_y, tl->text + (strncmp(tl->text, "> ", 2) == 0 ? 2 : 0), theme_color(t, COLOR_FG_MAIN));
+                draw_text_selected(gui, 0, render_y, "> ", theme_color(t, COLOR_WARM_ORANGE), sel_c1, sel_c2, has_sel);
+                draw_text_selected(gui, 2, render_y, tl->text + (strncmp(tl->text, "> ", 2) == 0 ? 2 : 0), theme_color(t, COLOR_FG_MAIN), sel_c1, sel_c2, has_sel);
             } else if (tl->type == LINE_TYPE_ERROR) {
-                draw_text(gui, t->padding_x, render_y, tl->text, theme_color(t, COLOR_ERROR_RED));
+                draw_text_selected(gui, 0, render_y, tl->text, theme_color(t, COLOR_ERROR_RED), sel_c1, sel_c2, has_sel);
             } else {
-                draw_text(gui, t->padding_x, render_y, tl->text, theme_color(t, COLOR_FG_MAIN));
+                draw_text_selected(gui, 0, render_y, tl->text, theme_color(t, COLOR_FG_MAIN), sel_c1, sel_c2, has_sel);
             }
         } else if (show_input_row) {
-            int curr_x = t->padding_x;
+            int curr_col = 0;
 
-            if (tab->state == SHELL_STATE_CONTINUATION) {
-                draw_text(gui, curr_x, render_y, "> ", theme_color(t, COLOR_WARM_ORANGE));
-                curr_x += 2 * t->font_width;
+            if (tab->in_search_mode) {
+                const char *search_pfx = "Enter search term: ";
+                int pfx_len = (int)strlen(search_pfx);
+                draw_text_selected(gui, curr_col, render_y, search_pfx, theme_color(t, COLOR_WARM_ORANGE), sel_c1, sel_c2, has_sel);
+                curr_col += pfx_len;
+
+                draw_text_selected(gui, curr_col, render_y, tab->search_buf, theme_color(t, COLOR_FG_MAIN), sel_c1, sel_c2, has_sel);
+
+                int cursor_x = t->padding_x + (curr_col + tab->search_cursor) * t->font_width;
+                int cursor_y = render_y - t->font_ascent;
+                fill_rect(gui, cursor_x, cursor_y, t->font_width, t->font_height, theme_color(t, COLOR_CURSOR));
+
+                char under_char = tab->search_buf[tab->search_cursor];
+                if (under_char != '\0') {
+                    char ch_str[2] = { under_char, '\0' };
+                    draw_text(gui, cursor_x, render_y, ch_str, theme_color(t, COLOR_BG));
+                }
+            } else if (tab->state == SHELL_STATE_CONTINUATION) {
+                draw_text_selected(gui, curr_col, render_y, "> ", theme_color(t, COLOR_WARM_ORANGE), sel_c1, sel_c2, has_sel);
+                curr_col += 2;
+
+                draw_text_selected(gui, curr_col, render_y, tab->input, theme_color(t, COLOR_FG_MAIN), sel_c1, sel_c2, has_sel);
+
+                int cursor_x = t->padding_x + (curr_col + tab->cursor) * t->font_width;
+                int cursor_y = render_y - t->font_ascent;
+                fill_rect(gui, cursor_x, cursor_y, t->font_width, t->font_height, theme_color(t, COLOR_CURSOR));
+
+                char under_char = tab->input[tab->cursor];
+                if (under_char != '\0') {
+                    char ch_str[2] = { under_char, '\0' };
+                    draw_text(gui, cursor_x, render_y, ch_str, theme_color(t, COLOR_BG));
+                }
             } else {
                 const char *user = getenv("USER");
                 if (!user || user[0] == '\0') user = "user";
-                draw_text(gui, curr_x, render_y, user, theme_color(t, COLOR_NEON_PINK));
-                curr_x += (int)strlen(user) * t->font_width;
+                draw_text_selected(gui, curr_col, render_y, user, theme_color(t, COLOR_NEON_PINK), sel_c1, sel_c2, has_sel);
+                curr_col += (int)strlen(user);
 
-                draw_text(gui, curr_x, render_y, "@terminator", theme_color(t, COLOR_PRIMARY_VIOLET));
-                curr_x += 11 * t->font_width;
+                draw_text_selected(gui, curr_col, render_y, "@terminator", theme_color(t, COLOR_PRIMARY_VIOLET), sel_c1, sel_c2, has_sel);
+                curr_col += 11;
 
-                draw_text(gui, curr_x, render_y, "> ", theme_color(t, COLOR_ELECTRIC_CYAN));
-                curr_x += 2 * t->font_width;
-            }
+                draw_text_selected(gui, curr_col, render_y, "> ", theme_color(t, COLOR_ELECTRIC_CYAN), sel_c1, sel_c2, has_sel);
+                curr_col += 2;
 
-            draw_text(gui, curr_x, render_y, tab->input, theme_color(t, COLOR_FG_MAIN));
+                draw_text_selected(gui, curr_col, render_y, tab->input, theme_color(t, COLOR_FG_MAIN), sel_c1, sel_c2, has_sel);
 
-            int cursor_x = curr_x + (tab->cursor * t->font_width);
-            int cursor_y = render_y - t->font_ascent;
-            fill_rect(gui, cursor_x, cursor_y, t->font_width, t->font_height, theme_color(t, COLOR_CURSOR));
+                int cursor_x = t->padding_x + (curr_col + tab->cursor) * t->font_width;
+                int cursor_y = render_y - t->font_ascent;
+                fill_rect(gui, cursor_x, cursor_y, t->font_width, t->font_height, theme_color(t, COLOR_CURSOR));
 
-            char under_char = tab->input[tab->cursor];
-            if (under_char != '\0') {
-                char ch_str[2] = { under_char, '\0' };
-                draw_text(gui, cursor_x, render_y, ch_str, theme_color(t, COLOR_BG));
+                char under_char = tab->input[tab->cursor];
+                if (under_char != '\0') {
+                    char ch_str[2] = { under_char, '\0' };
+                    draw_text(gui, cursor_x, render_y, ch_str, theme_color(t, COLOR_BG));
+                }
             }
         }
         render_y += line_h;

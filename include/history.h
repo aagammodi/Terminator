@@ -5,7 +5,7 @@
 #include <semaphore.h>
 #include <pthread.h>
 
-#define MAX_SHARED_HISTORY 2048
+#define MAX_SHARED_HISTORY 10000
 #define MAX_HISTORY_LINE_LEN 1024
 
 typedef struct SharedHistory {
@@ -24,5 +24,14 @@ void history_add(SharedHistory *hist, const char *cmd);
 int history_get_count(SharedHistory *hist);
 bool history_get_entry(SharedHistory *hist, int idx, char *out_buf, size_t out_size);
 void history_print(SharedHistory *hist, FILE *out_fp);
+
+/* Persistent history file operations */
+const char *history_get_file_path(char *buf, size_t len);
+void history_load_file(SharedHistory *hist, const char *path);
+void history_append_to_file(const char *path, const char *cmd);
+
+/* Searchable history (Ctrl+R) */
+int history_search(SharedHistory *hist, const char *term, char results[][MAX_HISTORY_LINE_LEN], int max_results);
+int longest_common_substring(const char *s1, const char *s2);
 
 #endif /* TERMINATOR_HISTORY_H */

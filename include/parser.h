@@ -16,6 +16,7 @@ typedef struct Pipeline {
     Command *commands;
     int num_commands;
     int capacity;
+    bool is_background;
 } Pipeline;
 
 /* Detect if command line has open quotes, trailing backslash, or unclosed substitutions */

@@ -316,8 +316,117 @@ Key binding management is decoupled into `include/keybind.h` and `src/keybind.c`
 1. **Mouse Drag Selection**:
    - `ButtonPress` on terminal body initializes anchor `(sel_start_col, sel_start_row)`.
    - `MotionNotify` updates `(sel_end_col, sel_end_row)` and requests window redrawing.
-   - Character cells within selection are drawn with inverted background and foreground colors.
+   - Per-tab isolation: Selection coordinates are tracked on `Tab`, preventing selection bleed between tabs.
 2. **X11 Clipboard & Primary Selection**:
    - On `Ctrl+Shift+C`, `XSetSelectionOwner()` acquires ownership of both `CLIPBOARD` and `XA_PRIMARY` atoms.
    - Responds to `SelectionRequest` events by serving UTF-8 string chunks to requesting applications.
    - On `Ctrl+Shift+V`, requests selection data asynchronously via `XConvertSelection` with atom `UTF8_STRING` and delivers contents directly into the active tab's input buffer at cursor position.
+
+---
+
+## 12. Premium Gradient Text Selection Engine (Part A)
+
+### Horizontal Aurora Gradient Architecture
+To deliver a modern visual experience replacing harsh flat inversion, Terminator implements a hardware-efficient, precomputed horizontal gradient renderer:
+- **Gradient Stops**:
+  1. Cyan: `#00E5FF` (`RGB(0, 229, 255)`)
+  2. Electric Blue: `#4776FF` (`RGB(71, 118, 255)`)
+  3. Vivid Violet: `#A855F7` (`RGB(168, 85, 247)`)
+- **Precomputed Color Table**:
+  - `theme_init_selection_gradient()` precalculates 64 smooth gradient steps across the two interpolation segments ($0.0 \to 0.5$ and $0.5 \to 1.0$) in `src/theme.c`.
+  - Allocated on the default X11 colormap (`XAllocColor`) during initialization, avoiding per-frame allocation overhead.
+- **Visual Contrast & Hierarchy**:
+  - **High-Contrast Navy Text**: Text within selected cells renders in deep `#08071A` (`RGB(8, 7, 26)`), ensuring sharp legibility over all gradient regions.
+  - **Glowing Border**: An outline drawn with `COLOR_SELECTION_BORDER` (`#00E5FF`) encloses the selection block.
+- **Rendering Pipeline in `gui_redraw()`**:
+  1. Pass 1: Render terminal surface background (`#19172B`).
+  2. Pass 2: Calculate selection span `(start_col, start_row)` to `(end_col, end_row)`.
+  3. Pass 3: Draw gradient fill rectangles underneath selected character cells column-by-column across 64 discrete horizontal color steps.
+  4. Pass 4: Render text — unselected characters use their standard syntax colors; selected characters use high-contrast dark navy `#08071A`.
+  5. Pass 5: Render glowing border around the selection boundary.
+  6. Pass 6: Draw cursor and status overlay.
+
+---
+
+## 13. Signals & Job Control Architecture (Task 8)
+
+### Process Group Management (`setpgid`)
+Every launched command or pipeline stage is assigned its own process group:
+```c
+if (i == 0) {
+    first_pgid = pid;
+    setpgid(pid, first_pgid);
+} else {
+    setpgid(pid, first_pgid);
+}
+```
+This isolates the process group completely from Terminator's main GUI and worker processes.
+
+### Job Table State Machine (`include/jobs.h`, `src/jobs.c`)
+Each tab owns an independent `JobTable` tracking up to `MAX_JOBS` (32) concurrent background and suspended jobs:
+- `JobState`: `JOB_STATE_RUNNING`, `JOB_STATE_STOPPED`, `JOB_STATE_DONE`.
+- Job Markers:
+  - `+` marks `table->current_id` (most recently suspended or placed in background).
+  - `-` marks `table->previous_id`.
+- Non-Blocking State Updates:
+  - `jobs_update_status()` queries all tracked processes with `waitpid(pid, &status, WNOHANG | WUNTRACED | WCONTINUED)`.
+  - Non-blocking output draining: background jobs with open pipes are read with `O_NONBLOCK` into the tab's scrollback without corrupting the active input prompt.
+
+### Signal Handling & Routing
+- **`Ctrl+C` (SIGINT)**:
+  - If a foreground command is active: delivered directly to `tab->foreground_pgid` via `kill(-pgid, SIGINT)`.
+  - In Thread Mode and Process Mode: GUI sends `IPC_MSG_INT` to worker pipe.
+  - Monitored process groups terminate cleanly, `^C\n` is printed, and the prompt is restored immediately.
+- **`Ctrl+Z` (SIGTSTP)**:
+  - Intercepted by GUI key handler or headless signal trap.
+  - GUI delivers `SIGTSTP` to `tab->foreground_pgid` and sends `IPC_MSG_TSTP` to worker pipe.
+  - The worker loop detects `WIFSTOPPED(status)` via `waitpid(..., WUNTRACED)`.
+  - The job is recorded as `JOB_STATE_STOPPED` in `tab->jobs`.
+  - Prints `\n[<id>]+ Stopped <cmd>\n`, clears `foreground_pgid`, and returns prompt immediately.
+- **Background Execution (`command &`)**:
+  - Trailing unquoted `&` operator is parsed into `pipeline->is_background = true`.
+  - Command launches in its own process group, is registered in `JobTable` as `JOB_STATE_RUNNING`, prints `[<id>] <pgid>`, and immediately returns prompt.
+- **Built-in `jobs`**:
+  - Calls `jobs_list()` to reap terminated jobs, updates `+`/`-` markers, and formats output.
+- **Built-in `fg [%id]`**:
+  - Brings job to foreground. If stopped, resumes via `SIGCONT`. Enters foreground monitoring loop until exit or subsequent stop.
+- **Built-in `bg [%id]`**:
+  - Resumes stopped job via `kill(-pgid, SIGCONT)`, updates state to `JOB_STATE_RUNNING`, prints `[<id>]+ <cmd> &`, and returns prompt immediately.
+
+---
+
+## 14. Searchable Persistent History & Longest Common Substring Engine (Task 9)
+
+### Persistent File Storage (`~/.terminator_history`)
+- Path Resolution: Checks `getenv("TERMINATOR_HISTORY")`, defaulting to `$HOME/.terminator_history`.
+- Multiline Serialization: Newlines within multiline commands are escaped to `\n`; literal backslashes are escaped to `\\`.
+- Advisory File Locking: Reads and writes are protected with POSIX `fcntl()` advisory write locks (`F_SETLK`), preventing corruptions from concurrent Terminator instances.
+- Capacity Clamping: File loading and saving strictly enforces the 10,000 most recent command limit.
+
+### Shared Synchronization Across Modes
+- **Mode A (Thread Mode)**: In-memory `SharedHistory` protected by `pthread_mutex_t`.
+- **Mode B (Process Mode)**: `SharedHistory` placed in POSIX shared memory (`shm_open`, `mmap`) protected by a process-shared POSIX semaphore (`sem_init(..., 1, 1)`).
+
+### 2-Row Dynamic Programming LCS Algorithm
+To match history entries without regex engines or third-party dependencies, `history.c` implements the Longest Contiguous Common Substring algorithm:
+- Given search term $S$ of length $M$ and candidate history command $T$ of length $N$:
+- Transition recurrence:
+  $$\text{LCS}[i][j] = \begin{cases} \text{LCS}[i-1][j-1] + 1 & \text{if } S[i-1] == T[j-1] \\ 0 & \text{otherwise} \end{cases}$$
+- Memory optimization: Computed using two rotating rows of size $N+1$ (`prev` and `curr`), reducing space complexity from $O(M \times N)$ to $O(N)$ with optimal cache locality.
+
+### 3-Tier Match Priority Engine
+When the user executes history search (`history_search()`):
+1. **Priority 1 (Case A — Exact Match)**:
+   - Scans history newest-to-oldest for $T == S$.
+   - If found, returns **only the most recent exact match**.
+2. **Priority 2 (Case B — Longest Contiguous Common Substring, $L_{\max} > 2$)**:
+   - If no exact match exists, computes $L(T, S)$ across all history entries.
+   - Identifies global maximum substring length $L_{\max}$.
+   - If $L_{\max} > 2$, collects **all history commands achieving $L_{\max}$** and displays them in newest-first order.
+3. **Priority 3 (Case C — No Match, $L_{\max} \le 2$)**:
+   - If $L_{\max} \le 2$, prints `No match for search term in history`.
+
+### Interactive Search Mode (`Ctrl+R`)
+- Triggers search prompt `Enter search term: ` directly on the terminal input line.
+- Supports live typing, Backspace, and cancellation via `Escape` or `Ctrl+C`.
+- Pressing `Enter` executes the 3-tier search engine, prints the matching results, and cleanly restores the prompt without auto-executing or logging the search query into history.

@@ -11,7 +11,9 @@ typedef enum {
     IPC_MSG_PROMPT = 5,   /* Worker -> GUI: command finished, payload: int exit_status */
     IPC_MSG_CWD = 6,      /* Worker -> GUI: current directory changed, payload: path */
     IPC_MSG_CLEAR = 7,    /* Worker -> GUI: clear screen */
-    IPC_MSG_EXIT = 8      /* Worker -> GUI: exit command requested */
+    IPC_MSG_EXIT = 8,     /* Worker -> GUI: exit command requested */
+    IPC_MSG_TSTP = 9,     /* GUI -> Worker: SIGTSTP suspend foreground job */
+    IPC_MSG_CONT = 10     /* GUI -> Worker: SIGCONT resume job */
 } IPCMsgType;
 
 typedef struct {

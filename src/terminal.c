@@ -80,6 +80,8 @@ Tab *terminal_tab_create(int id, const char *initial_dir, Shell *shell) {
     tab->csi_len = 0;
     tab->csi_buf[0] = '\0';
 
+    jobs_init(&tab->jobs);
+
     return tab;
 }
 
@@ -113,6 +115,8 @@ void terminal_tab_destroy(Tab *tab) {
         free(tab->lines[i].colors);
     }
     free(tab->lines);
+
+    jobs_cleanup(&tab->jobs);
 
     free(tab);
 }

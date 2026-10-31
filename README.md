@@ -128,9 +128,12 @@ It features a custom-built GUI window, genuine shell lexer and parser, process o
   - `Up` / `Down` arrows: History navigation across shared command history with draft preservation (unsubmitted input restored when returning to draft).
   - `Ctrl+L`: Clear screen while preserving current active input and cursor position.
   - `Ctrl+D`: Context-sensitive EOF handling: closes active tab if input line is empty; protects unsubmitted input when non-empty.
-- **X11 Clipboard & Primary Selection**:
-  - Mouse text selection: Drag left mouse button (`Button1`) across terminal lines to highlight text.
-  - Visual selection rendering: Inverted highlight background for selected character cells.
+- **Premium Gradient Text Selection & X11 Clipboard**:
+  - Mouse text selection: Drag left mouse button (`Button1`) across terminal lines to highlight text with clean sub-character clamping.
+  - **Horizontal Aurora Gradient Highlight**: Selected regions render with a rich horizontal gradient interpolating smoothly from Cyan (`#00E5FF`) to Electric Blue (`#4776FF`) to Vivid Violet (`#A855F7`), enclosed within a subtle glowing border (`#00E5FF`).
+  - **High-Contrast Text**: Text inside the selection renders in deep dark navy (`#08071A`), ensuring razor-sharp legibility and contrast against the vibrant gradient fill.
+  - Multi-line selection support preserving newline semantics across line boundaries.
+  - Per-tab selection isolation: each tab maintains its own active selection state without cross-tab interference.
   - `Ctrl+Shift+C`: Copy highlighted selection to X11 `CLIPBOARD` and `PRIMARY` selections.
   - `Ctrl+Shift+V`: Paste selection asynchronously from X11 clipboard into the input line at cursor position.
   - Middle-click (`Button2`): Paste primary selection directly at cursor.
@@ -141,6 +144,63 @@ It features a custom-built GUI window, genuine shell lexer and parser, process o
     - `bind <action> <combo>`: Binds an action (e.g., `bind clear-screen Ctrl+Alt+L`) with immediate validation and conflict detection.
     - `bind --reset`: Restores all key bindings to factory defaults.
   - Fallback safety: Automatically falls back to safe default bindings on parsing errors or syntax conflicts.
+
+### Task 8 — Signals and Job Control
+- **Process Group Isolation (`setpgid`)**: Every foreground and background command/pipeline is placed in its own unique process group (`setpgid(0, 0)`), preventing signal leakage into Terminator or other tabs.
+- **`Ctrl+C` Foreground Interruption**:
+  - Delivers `SIGINT` directly to the active foreground process group (`kill(-tab->foreground_pgid, SIGINT)`).
+  - Child processes terminate immediately; the terminal prints `^C\n` and cleanly restores the prompt.
+  - Terminator itself and all tab worker threads/processes remain completely unharmed.
+  - Preserves `multiWatch` cancellation.
+- **`Ctrl+Z` Foreground Suspension**:
+  - Delivers `SIGTSTP` directly to the active foreground process group (`kill(-tab->foreground_pgid, SIGTSTP)`).
+  - Suspended job is recorded in the tab's `JobTable` with state `Stopped`.
+  - Prints `\n[<id>]+ Stopped <cmd>\n` and immediately restores the interactive shell prompt without blocking or hanging.
+- **Background Execution Operator (`command &`)**:
+  - Commands and pipelines ending in `&` launch in the background.
+  - Prints `[<id>] <pgid>` and returns control to the user immediately.
+  - Background jobs stream output asynchronously to the tab scrollback without corrupting the active input line or freezing the GUI.
+- **`jobs` Built-in Command**:
+  - Lists all active and completed background/suspended jobs for the current tab:
+    ```text
+    [1]+ Running              sleep 100 &
+    [2]- Stopped              sleep 200
+    ```
+  - Displays `+` for the current job (most recently suspended/started) and `-` for the previous job.
+  - Automatically reaps and reports `Done` jobs before removing them from the table.
+  - Strictly isolated per tab (background jobs in Tab 1 do not appear in Tab 2).
+- **`fg [%id]` Built-in Command**:
+  - Brings a stopped or running background job to the foreground.
+  - Sends `SIGCONT` to resume stopped jobs, prints the command line, and monitors until completion or subsequent suspension.
+- **`bg [%id]` Built-in Command**:
+  - Resumes a stopped job in the background by sending `SIGCONT`.
+  - Updates job state to `Running`, prints `[<id>]+ <cmd> &`, and returns control to the prompt immediately.
+- **Mode A (Thread Mode) and Mode B (Process Mode) Parity**:
+  - Full signal routing and job control parity across both threading and multi-process architectures via framed IPC messages (`IPC_MSG_INT`, `IPC_MSG_TSTP`, `IPC_MSG_CONT`).
+
+### Task 9 — Searchable History
+- **Persistent Disk Storage (`~/.terminator_history`)**:
+  - Stores up to the 10,000 most recent commands in `~/.terminator_history` (or custom path via `TERMINATOR_HISTORY`).
+  - Supports multiline command escaping (newlines stored as `\n`, literal backslashes as `\\`).
+  - Advisory file locking via `fcntl(F_SETLK)` prevents write collisions across concurrent Terminator processes.
+- **Shared History Across All Tabs**:
+  - Synchronized across threads in Mode A using a mutex.
+  - Synchronized across child processes in Mode B using POSIX shared memory and a process-shared semaphore.
+- **`history` Built-in Command**:
+  - Prints the 1,000 most recent commands in chronological order (oldest first) with 1-based indexing:
+    ```text
+    1  ls -la
+    2  git status
+    3  make test
+    ```
+- **`Ctrl+R` Interactive Search Engine**:
+  - Enters search mode, prompting: `Enter search term: ` with live cursor editing.
+  - Pressing `Escape` or `Ctrl+C` cancels search and restores previous draft input.
+  - Pressing `Enter` searches persistent history according to strict course priorities:
+    1. **Priority 1 (Case A — Exact Match)**: If history contains commands exactly matching the search term, returns the **most recent exact match only**.
+    2. **Priority 2 (Case B — Longest Contiguous Common Substring, $L_{\max} > 2$)**: If no exact match exists, finds commands sharing the maximum contiguous substring length $L_{\max}$. If $L_{\max} > 2$, returns **all tied matching commands** in newest-first order.
+    3. **Priority 3 (Case C — No Match, $L_{\max} \le 2$)**: If the longest contiguous common substring is 2 characters or fewer, displays `No match for search term in history`.
+  - Returns cleanly to prompt, restores active editing state, does NOT execute the command automatically, and does not record the search prompt or query in history.
 
 ---
 
@@ -214,19 +274,21 @@ To execute a command string through the Terminator engine and print output:
 
 ## 5. Automated Test Suite
 
-Run the complete 151-test automated test suite covering Tasks 1–5, Thread Mode, Process Mode, Ctrl+C interrupt handling, and Scrollbar mechanics:
+Run the complete 280-test automated test suite covering Tasks 1–9, Thread Mode, Process Mode, Ctrl+C / Ctrl+Z signal routing, Job Control, Searchable History, and Scrollbar mechanics:
 ```bash
 make test
 ```
 Or execute the test components individually:
 ```bash
-./tests/test_tabs                    # Multi-tab lifecycle, bounds, and isolation
-./tests/test_modes_and_scrollbar     # Scrollbar geometry, Mode A threads, Mode B processes, crash isolation
-python3 tests/test_ui_and_lifecycle.py # Interactive PTY lifecycle in both Thread and Process modes
-bash tests/test_commands.sh          # Built-ins, external commands, $?
-bash tests/test_redirection.sh       # <, >, >>, missing files, built-in redirection
-bash tests/test_pipelines.sh         # 2, 3, 4, 5-stage pipes, deadlock tests
-bash tests/test_multiline.sh         # Quotes, multiline \, $(...), backticks, globs
+./tests/test_tabs                    # Task 1: Multi-tab lifecycle, bounds, and directory isolation
+./tests/test_modes_and_scrollbar     # Task 1: Scrollbar geometry, Mode A threads, Mode B processes, crash isolation
+./tests/test_tasks6_and_7            # Tasks 6 & 7: multiWatch concurrency, keybindings, selection geometry
+./tests/test_tasks8_and_9            # Tasks 8 & 9: Job control, process groups, LCS history search engine
+python3 tests/test_ui_and_lifecycle.py # Interactive PTY lifecycle, Ctrl+C, Ctrl+Z, jobs, bg, fg in both modes
+bash tests/test_commands.sh          # Task 2: Built-ins, external commands, $?
+bash tests/test_redirection.sh       # Task 4: <, >, >>, missing files, built-in redirection
+bash tests/test_pipelines.sh         # Task 5: 2, 3, 4, 5-stage pipes, deadlock tests
+bash tests/test_multiline.sh         # Task 3: Quotes, multiline \, $(...), backticks, globs
 ```
 
 ---
@@ -239,8 +301,46 @@ pwd                               # Print working directory
 cd /tmp                           # Change directory
 cd                                # Return to $HOME
 cd ~/Downloads                    # Tilde expansion
-history                           # Show recent command history
-exit                              # Terminate shell
+history                           # Show up to 1,000 recent commands chronologically
+jobs                              # List background and suspended jobs for active tab
+fg %1                             # Bring job 1 to foreground
+bg %1                             # Resume stopped job 1 in background
+multiWatch ["date", "uptime"]     # Run concurrent periodic monitoring
+bind                              # List active keybindings
+exit                              # Terminate active tab/shell
+```
+
+### Job Control & Signals (Task 8)
+```bash
+# Run command in background:
+sleep 60 &                        # Prints [1] <pgid> and returns prompt immediately
+
+# Suspend foreground job:
+sleep 200
+# Press Ctrl+Z:
+# Prints [2]+ Stopped sleep 200 and restores prompt
+
+# Resume stopped job in background:
+bg %2                             # Prints [2]+ sleep 200 &
+
+# Bring job to foreground and interrupt:
+fg %2
+# Press Ctrl+C:
+# Terminates sleep 200 process group, prints ^C, and restores prompt
+```
+
+### Searchable History & Hotkeys (Task 9 & Task 7)
+```bash
+# Press Ctrl+R:
+# Displays: Enter search term:
+# Type query and press Enter:
+# - Case A: Most recent exact match
+# - Case B: All tied commands achieving maximum common substring length (L > 2)
+# - Case C: Prints "No match for search term in history" (if L <= 2)
+
+# Select text with mouse:
+# Highlights with horizontal Cyan -> Electric Blue -> Vivid Violet gradient
+# Press Ctrl+Shift+C to copy, Ctrl+Shift+V to paste
 ```
 
 ### External Commands & Status
@@ -288,11 +388,8 @@ sort < input.txt | uniq -c > counts.txt
 
 ---
 
-## 7. Known Limitations & Deferred Features (Tasks 6–11)
+## 7. Known Limitations & Deferred Features (Tasks 10–11)
 
 As specified in the course project phase guidelines:
-- **Signals & Process Group Job Control**: Background job operators (`&`), stopped jobs, Ctrl+Z, and active foreground process group management are deferred to Task 8.
-- **multiWatch**: Parallel command runner with periodic polling is deferred to Task 6.
-- **Searchable History & Ctrl+R**: 10,000-entry persistent disk history with longest-common-substring search is deferred to Task 9.
-- **Filename Tab Auto-completion**: Interactive Tab completion is deferred to Task 10.
-- **Advanced Bash Script Control Flow**: `if/elif/else/fi` conditional evaluation and test expressions (`[ ... ]`) are deferred to Task 11 (`source <script>` for sequential commands and comments is fully functional in Task 2).
+- **Filename Tab Auto-completion**: Interactive Tab auto-completion across executables, file paths, and directories is deferred to Task 10.
+- **Advanced Bash Script Control Flow**: `if/elif/else/fi` conditional evaluation and test expressions (`[ ... ]`) are deferred to Task 11 (`source <script>` for sequential commands, multiline continuations, and comments is fully functional in Task 2).

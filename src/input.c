@@ -45,6 +45,73 @@ void input_handle_key_event(XKeyEvent *event, GUI *gui, Shell *shell, bool *need
                 kill(tab->running_pid, SIGINT);
             }
             return;
+        } else if (is_ctrl && (ksym == XK_z || ksym == XK_Z)) {
+            /* Ctrl+Z: Send SIGTSTP to child process group immediately */
+            if (tab->to_worker_pipe[1] >= 0) {
+                ipc_send_msg(tab->to_worker_pipe[1], IPC_MSG_TSTP, NULL, 0);
+            }
+            if (tab->foreground_pgid > 0) {
+                kill(-tab->foreground_pgid, SIGTSTP);
+            } else if (tab->running_pid > 0) {
+                kill(-tab->running_pid, SIGTSTP);
+            }
+            return;
+        }
+        return;
+    }
+
+    /* History search mode (Ctrl+R) handling */
+    if (tab->in_search_mode) {
+        if (ksym == XK_Escape || (is_ctrl && (ksym == XK_c || ksym == XK_C))) {
+            tab->in_search_mode = false;
+            tab->search_buf[0] = '\0';
+            tab->search_cursor = 0;
+            terminal_append_line(tab, "^C", LINE_TYPE_OUTPUT);
+            terminal_show_prompt(tab);
+            return;
+        }
+        if (ksym == XK_Return || ksym == XK_KP_Enter) {
+            char search_term[MAX_INPUT_LEN];
+            safe_strncpy(search_term, tab->search_buf, sizeof(search_term));
+            tab->in_search_mode = false;
+            tab->search_buf[0] = '\0';
+            tab->search_cursor = 0;
+
+            char echo_line[MAX_INPUT_LEN + 32];
+            snprintf(echo_line, sizeof(echo_line), "Enter search term: %s", search_term);
+            terminal_append_line(tab, echo_line, LINE_TYPE_PROMPT);
+
+            char results[16][MAX_HISTORY_LINE_LEN];
+            int num_results = 0;
+            if (shell && shell->history && search_term[0] != '\0') {
+                num_results = history_search(shell->history, search_term, results, 16);
+            }
+
+            if (num_results > 0) {
+                for (int i = 0; i < num_results; i++) {
+                    terminal_append_line(tab, results[i], LINE_TYPE_OUTPUT);
+                }
+            } else {
+                terminal_append_line(tab, "No match for search term in history", LINE_TYPE_OUTPUT);
+            }
+            terminal_show_prompt(tab);
+            return;
+        }
+        if (ksym == XK_BackSpace) {
+            int slen = (int)strlen(tab->search_buf);
+            if (slen > 0) {
+                tab->search_buf[slen - 1] = '\0';
+                tab->search_cursor = slen - 1;
+            }
+            return;
+        }
+        if (len > 0 && !is_ctrl && (unsigned char)str[0] >= 32) {
+            int slen = (int)strlen(tab->search_buf);
+            if (slen + len < (int)sizeof(tab->search_buf) - 1) {
+                strcat(tab->search_buf, str);
+                tab->search_cursor = (int)strlen(tab->search_buf);
+            }
+            return;
         }
         return;
     }
@@ -64,6 +131,14 @@ void input_handle_key_event(XKeyEvent *event, GUI *gui, Shell *shell, bool *need
             if (shell->num_tabs > 1) {
                 int prev = (shell->active_tab_idx - 1 + shell->num_tabs) % shell->num_tabs;
                 shell_switch_tab(shell, prev);
+                Tab *nt = shell_get_active_tab(shell);
+                if (gui && nt) {
+                    gui->sel_active = nt->sel_active;
+                    gui->sel_start_row = nt->sel_start_row;
+                    gui->sel_start_col = nt->sel_start_col;
+                    gui->sel_end_row = nt->sel_end_row;
+                    gui->sel_end_col = nt->sel_end_col;
+                }
             }
             return;
 
@@ -71,6 +146,14 @@ void input_handle_key_event(XKeyEvent *event, GUI *gui, Shell *shell, bool *need
             if (shell->num_tabs > 1) {
                 int next = (shell->active_tab_idx + 1) % shell->num_tabs;
                 shell_switch_tab(shell, next);
+                Tab *nt = shell_get_active_tab(shell);
+                if (gui && nt) {
+                    gui->sel_active = nt->sel_active;
+                    gui->sel_start_row = nt->sel_start_row;
+                    gui->sel_start_col = nt->sel_start_col;
+                    gui->sel_end_row = nt->sel_end_row;
+                    gui->sel_end_col = nt->sel_end_col;
+                }
             }
             return;
 
@@ -132,6 +215,25 @@ void input_handle_key_event(XKeyEvent *event, GUI *gui, Shell *shell, bool *need
         case ACTION_PASTE:
             if (gui) {
                 gui_request_paste(gui);
+            }
+            return;
+
+        case ACTION_HISTORY_SEARCH:
+            tab->in_search_mode = true;
+            tab->search_buf[0] = '\0';
+            tab->search_cursor = 0;
+            return;
+
+        case ACTION_SUSPEND_JOB:
+            if (tab->state == SHELL_STATE_RUNNING) {
+                if (tab->to_worker_pipe[1] >= 0) {
+                    ipc_send_msg(tab->to_worker_pipe[1], IPC_MSG_TSTP, NULL, 0);
+                }
+                if (tab->foreground_pgid > 0) {
+                    kill(-tab->foreground_pgid, SIGTSTP);
+                } else if (tab->running_pid > 0) {
+                    kill(-tab->running_pid, SIGTSTP);
+                }
             }
             return;
 
@@ -371,6 +473,16 @@ void input_handle_button_press(XButtonEvent *event, GUI *gui) {
                     shell_close_tab(gui->shell, i);
                 } else {
                     shell_switch_tab(gui->shell, i);
+                    Tab *nt = shell_get_active_tab(gui->shell);
+                    if (nt) {
+                        gui->sel_active = nt->sel_active;
+                        gui->sel_start_row = nt->sel_start_row;
+                        gui->sel_start_col = nt->sel_start_col;
+                        gui->sel_end_row = nt->sel_end_row;
+                        gui->sel_end_col = nt->sel_end_col;
+                    } else {
+                        gui->sel_active = false;
+                    }
                 }
                 gui->needs_redraw = true;
                 return;
@@ -409,6 +521,13 @@ void input_handle_button_press(XButtonEvent *event, GUI *gui) {
         gui->sel_end_col = gui->sel_start_col;
         gui->sel_dragging = true;
         gui->sel_active = false;
+
+        tab->sel_start_row = gui->sel_start_row;
+        tab->sel_start_col = gui->sel_start_col;
+        tab->sel_end_row = gui->sel_end_row;
+        tab->sel_end_col = gui->sel_end_col;
+        tab->sel_dragging = true;
+        tab->sel_active = false;
         gui->needs_redraw = true;
         return;
     }
@@ -493,6 +612,9 @@ void input_handle_motion(XMotionEvent *event, GUI *gui) {
         if (gui->sel_start_row != gui->sel_end_row || gui->sel_start_col != gui->sel_end_col) {
             gui->sel_active = true;
         }
+        tab->sel_end_row = gui->sel_end_row;
+        tab->sel_end_col = gui->sel_end_col;
+        tab->sel_active = gui->sel_active;
         gui->needs_redraw = true;
         return;
     }

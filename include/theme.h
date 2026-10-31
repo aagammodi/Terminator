@@ -18,14 +18,19 @@ typedef enum {
     COLOR_ERROR_RED,
     COLOR_BORDER,
     COLOR_SELECTION,
+    COLOR_SELECTION_FG,
+    COLOR_SELECTION_BORDER,
     COLOR_CURSOR,
     COLOR_BLUE_ACCENT,
     COLOR_COUNT
 } ThemeColorIndex;
 
+#define GRADIENT_STEPS 64
+
 typedef struct Theme {
     unsigned long colors[COLOR_COUNT];
     const char *hex_values[COLOR_COUNT];
+    unsigned long selection_gradient[GRADIENT_STEPS];
     
     /* Font and metrics */
     XFontStruct *font;

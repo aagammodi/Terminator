@@ -177,7 +177,42 @@ def run_interactive_session(extra_args=None, mode_name="Thread Mode"):
     res_mw_rec = read_until("@terminator> ", timeout=1.5)
     check("Shell remains fully healthy after multiWatch cancellation", "mw_recovered_healthy" in res_mw_rec, f"Output was: {repr(res_mw_rec)}")
 
-    # 15. Clean exit
+    # 15. Task 8: Background job execution (command &) and jobs built-in
+    send_cmd("sleep 15 &")
+    res_bg_start = read_until("@terminator> ", timeout=1.5)
+    check("Background command & outputs [id] pgid and returns prompt immediately", "[1] " in res_bg_start and "@terminator>" in res_bg_start, f"Output was: {repr(res_bg_start)}")
+
+    send_cmd("jobs")
+    res_jobs = read_until("@terminator> ", timeout=1.5)
+    check("Built-in 'jobs' lists running background job", "[1]" in res_jobs and "Running" in res_jobs and "sleep 15" in res_jobs, f"Output was: {repr(res_jobs)}")
+
+    # 16. Task 8: Foreground job suspension (Ctrl+Z), bg resume, and fg termination (Ctrl+C)
+    send_cmd("sleep 200")
+    time.sleep(0.15)
+    os.write(master, b"\x1a")  # Ctrl+Z
+    res_z = read_until("@terminator> ", timeout=2.0)
+    check("Ctrl+Z suspends foreground job, prints Stopped, and restores prompt", "Stopped" in res_z and "@terminator>" in res_z, f"Output was: {repr(res_z)}")
+
+    send_cmd("jobs")
+    res_jobs_stop = read_until("@terminator> ", timeout=1.5)
+    check("Built-in 'jobs' shows Stopped state", "Stopped" in res_jobs_stop, f"Output was: {repr(res_jobs_stop)}")
+
+    send_cmd("bg %2")
+    res_bg_res = read_until("@terminator> ", timeout=1.5)
+    check("Built-in 'bg' resumes stopped job in background", "[2]+ sleep 200 &" in res_bg_res or "[2]" in res_bg_res, f"Output was: {repr(res_bg_res)}")
+
+    send_cmd("fg %2")
+    time.sleep(0.15)
+    os.write(master, b"\x03")  # Ctrl+C
+    res_fg_int = read_until("@terminator> ", timeout=2.0)
+    check("Foregrounded job interrupted by Ctrl+C restores prompt", "@terminator>" in res_fg_int, f"Output was: {repr(res_fg_int)}")
+
+    # 17. Task 9: Shared history built-in listing
+    send_cmd("history")
+    res_hist = read_until("@terminator> ", timeout=1.5)
+    check("Built-in 'history' lists numbered chronological commands", "sleep 15" in res_hist and "jobs" in res_hist, f"Output was: {repr(res_hist)}")
+
+    # 18. Clean exit
     send_cmd("exit")
     time.sleep(0.1)
     os.close(master)

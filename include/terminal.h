@@ -2,6 +2,7 @@
 #define TERMINATOR_TERMINAL_H
 
 #include "common.h"
+#include "jobs.h"
 
 typedef enum {
     LINE_TYPE_NORMAL = 0,
@@ -75,6 +76,7 @@ typedef struct Tab {
     pid_t pipeline_pids[MAX_PIPELINE_CMDS];
     int num_pipeline_pids;
     int last_exit_status;
+    JobTable jobs;
     
     /* Worker thread (Mode A) and child process (Mode B) lifecycle */
     pthread_t worker_thread;
@@ -87,6 +89,19 @@ typedef struct Tab {
     /* History navigation index (queries Shell shared history) */
     int history_index; /* For Up/Down navigation (-1 = current new input) */
     char saved_draft[MAX_INPUT_LEN]; /* Saved draft when navigating history */
+
+    /* Text selection state (per-tab isolation) */
+    bool sel_active;
+    bool sel_dragging;
+    int sel_start_row;
+    int sel_start_col;
+    int sel_end_row;
+    int sel_end_col;
+
+    /* Searchable history mode (Ctrl+R) */
+    bool in_search_mode;
+    char search_buf[MAX_INPUT_LEN];
+    int search_cursor;
     
     bool echo_to_stdout; /* For headless/test CLI modes */
 } Tab;

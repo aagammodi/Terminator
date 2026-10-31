@@ -236,23 +236,96 @@ static int builtin_source(const Command *cmd, Tab *tab) {
 
 static int builtin_jobs(const Command *cmd, Tab *tab) {
     (void)cmd;
-    (void)tab;
-    /* Phase 1: No background jobs active */
+    if (!tab) return 0;
+    jobs_list(&tab->jobs, stdout, tab);
     return 0;
 }
 
 static int builtin_fg(const Command *cmd, Tab *tab) {
-    (void)cmd;
-    (void)tab;
-    fprintf(stderr, "terminator: fg: no current job\n");
-    return 1;
+    if (!tab) return 1;
+    jobs_update_status(&tab->jobs, tab);
+
+    Job *job = NULL;
+    if (cmd->argc == 1) {
+        job = jobs_get_current(&tab->jobs);
+        if (!job) {
+            fprintf(stderr, "terminator: fg: no current job\n");
+            return 1;
+        }
+    } else {
+        const char *arg = cmd->argv[1];
+        if (arg[0] == '%') arg++;
+        int id = atoi(arg);
+        job = jobs_find_by_id(&tab->jobs, id);
+        if (!job) {
+            fprintf(stderr, "terminator: fg: %s: no such job\n", cmd->argv[1]);
+            return 1;
+        }
+    }
+
+    if (job->state == JOB_STATE_DONE) {
+        fprintf(stderr, "terminator: fg: job has terminated\n");
+        return 1;
+    }
+
+    printf("%s\n", job->cmd_line);
+    fflush(stdout);
+
+    if (job->state == JOB_STATE_STOPPED) {
+        if (kill(-job->pgid, SIGCONT) < 0) {
+            kill(job->pgid, SIGCONT);
+        }
+        job->state = JOB_STATE_RUNNING;
+    }
+
+    job->is_foreground = true;
+    tab->foreground_pgid = job->pgid;
+    tab->out_pipe_fd = job->out_pipe_fd;
+    tab->running_pid = (job->num_pids > 0) ? job->pids[job->num_pids - 1] : job->pgid;
+    tab->num_pipeline_pids = job->num_pids;
+    for (int p = 0; p < job->num_pids; p++) {
+        tab->pipeline_pids[p] = job->pids[p];
+    }
+
+    return 0;
 }
 
 static int builtin_bg(const Command *cmd, Tab *tab) {
-    (void)cmd;
-    (void)tab;
-    fprintf(stderr, "terminator: bg: no current job\n");
-    return 1;
+    if (!tab) return 1;
+    jobs_update_status(&tab->jobs, tab);
+
+    Job *job = NULL;
+    if (cmd->argc == 1) {
+        job = jobs_get_current_stopped(&tab->jobs);
+        if (!job) {
+            fprintf(stderr, "terminator: bg: no current job\n");
+            return 1;
+        }
+    } else {
+        const char *arg = cmd->argv[1];
+        if (arg[0] == '%') arg++;
+        int id = atoi(arg);
+        job = jobs_find_by_id(&tab->jobs, id);
+        if (!job) {
+            fprintf(stderr, "terminator: bg: %s: no such job\n", cmd->argv[1]);
+            return 1;
+        }
+    }
+
+    if (job->state != JOB_STATE_STOPPED) {
+        fprintf(stderr, "terminator: bg: job %d already in background\n", job->id);
+        return 0;
+    }
+
+    if (kill(-job->pgid, SIGCONT) < 0) {
+        kill(job->pgid, SIGCONT);
+    }
+    job->state = JOB_STATE_RUNNING;
+    job->is_foreground = false;
+
+    printf("[%d]+ %s &\n", job->id, job->cmd_line);
+    fflush(stdout);
+    return 0;
 }
 
 static int builtin_multiwatch(const Command *cmd, Tab *tab) {

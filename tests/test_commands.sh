@@ -65,7 +65,7 @@ assert_session "exit status \$? after command not found" "notacommand_xyz\necho 
 assert_session "history displays recent commands" "echo cmd1\necho cmd2\nhistory\nexit" "echo cmd1"
 assert_session "history preserves sequence" "echo cmd1\necho cmd2\nhistory\nexit" "echo cmd2"
 
-assert_output "deferred built-in multiWatch stub" "multiWatch" "requires Tasks 6-11"
+assert_output "built-in multiWatch missing argument" "multiWatch" "missing argument"
 assert_output "built-in fg no current job" "fg" "no current job"
 assert_output "built-in bg no current job" "bg" "no current job"
 assert_output "source missing argument reports error" "source" "filename argument required"

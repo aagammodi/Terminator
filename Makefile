@@ -23,6 +23,7 @@ OBJS := $(patsubst $(SRC_DIR)/%.c, $(OBJ_DIR)/%.o, $(SRCS))
 OBJS_NO_MAIN := $(filter-out $(OBJ_DIR)/main.o, $(OBJS))
 TEST_TABS_BIN := tests/test_tabs
 TEST_MODES_BIN := tests/test_modes_and_scrollbar
+TEST_TASKS67_BIN := tests/test_tasks6_and_7
 
 .PHONY: all clean test
 
@@ -37,6 +38,9 @@ $(TEST_TABS_BIN): tests/test_tabs.c $(OBJS_NO_MAIN)
 $(TEST_MODES_BIN): tests/test_modes_and_scrollbar.c $(OBJS_NO_MAIN)
 	$(CC) $(CFLAGS) $< $(OBJS_NO_MAIN) -o $@ $(LDFLAGS)
 
+$(TEST_TASKS67_BIN): tests/test_tasks6_and_7.c $(OBJS_NO_MAIN)
+	$(CC) $(CFLAGS) $< $(OBJS_NO_MAIN) -o $@ $(LDFLAGS)
+
 $(OBJ_DIR)/%.o: $(SRC_DIR)/%.c | $(OBJ_DIR)
 	$(CC) $(CFLAGS) -c $< -o $@
 
@@ -45,10 +49,11 @@ $(OBJ_DIR)/%.o: $(SRC_DIR)/%.c | $(OBJ_DIR)
 $(OBJ_DIR):
 	mkdir -p $(OBJ_DIR)
 
-test: $(BIN) $(TEST_TABS_BIN) $(TEST_MODES_BIN)
+test: $(BIN) $(TEST_TABS_BIN) $(TEST_MODES_BIN) $(TEST_TASKS67_BIN)
 	@echo "Running Terminator Test Suite..."
 	@$(TEST_TABS_BIN)
 	@$(TEST_MODES_BIN)
+	@$(TEST_TASKS67_BIN)
 	@bash tests/test_commands.sh
 	@bash tests/test_redirection.sh
 	@bash tests/test_pipelines.sh
@@ -57,5 +62,5 @@ test: $(BIN) $(TEST_TABS_BIN) $(TEST_MODES_BIN)
 	@echo "All automated tests completed successfully!"
 
 clean:
-	rm -rf $(OBJ_DIR) $(BIN) $(TEST_TABS_BIN) $(TEST_MODES_BIN) *.o *.d tests/*.d
+	rm -rf $(OBJ_DIR) $(BIN) $(TEST_TABS_BIN) $(TEST_MODES_BIN) $(TEST_TASKS67_BIN) *.o *.d tests/*.d
 	rm -f tests/*.tmp tests/out*.txt tests/res*.txt tests/sort*.txt

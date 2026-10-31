@@ -92,6 +92,56 @@ It features a custom-built GUI window, genuine shell lexer and parser, process o
 - **Pipeline Stage Safety Limits**: Strictly validates against `MAX_PIPELINE_CMDS` (64 stages); gracefully rejects overflow pipelines with exit code 1 to protect process table and descriptor table limits.
 - **Large Stream Handling**: Asynchronous output reading prevents deadlocks when commands produce streams exceeding the Linux kernel pipe capacity (verified with 1MB+ streams).
 
+### Task 6 — multiWatch (Concurrent Periodic Command Monitoring)
+- **Built-in Syntax**: `multiWatch ["cmd1", "cmd2", ...]`
+  - Robust JSON-style bracketed list parsing supporting single and double quotes.
+  - Commands may contain internal commas, quotes, flags, and complex shell pipelines (e.g. `multiWatch ["date +%T", "ls -l | wc -l"]`).
+  - Graceful rejection with clear diagnostics for syntax errors, missing brackets, unquoted entries, and empty command lists.
+- **Concurrent Non-Blocking Execution**:
+  - Every monitored command runs in its own child process group (`setpgid(0, 0)`), executing through Terminator's shell parser and pipeline engine.
+  - Output streams are monitored simultaneously using multiplexed `poll()`, avoiding busy-waiting and conserving CPU resources.
+  - Asynchronous chunk buffering accumulates output per command without interleaving or truncating lines.
+- **Periodic Scheduling (2-Second Independence)**:
+  - Each command runs independently on a 2-second monotonic cycle (`CLOCK_MONOTONIC`) starting after its individual execution completes.
+  - Fast commands do not tight-loop or starve other commands; slow or blocking commands do not delay the execution or output of faster commands.
+- **Exact Output Formatting**:
+  - Outputs atomic blocks matching the assignment specification with 52 dashes:
+    ```text
+    "<cmd>", <unix_timestamp>:
+    ----------------------------------------------------
+    <command output>
+    ----------------------------------------------------
+    ```
+- **Instant Ctrl+C Cancellation**:
+  - Pressing `Ctrl+C` immediately broadcasts `SIGINT` (followed by `SIGKILL` after grace period) to all monitored process groups and reaps them with `waitpid()`.
+  - Prints `^C\n`, displays the primary prompt, and returns control to the user without leaving orphan processes or crashing the shell.
+- **Dual Mode Support**: Works identically in Mode A (Thread Mode) and Mode B (Process Mode), passing IPC control messages seamlessly.
+
+### Task 7 — Hotkeys, Key Bindings, Selection & Configuration
+- **Full In-Line Cursor Navigation & Editing**:
+  - `Left` / `Right` arrows: Move cursor horizontally, strictly clamped to input bounds.
+  - `Ctrl+A` / `Home`: Jump to the beginning of the line (`0`).
+  - `Ctrl+E` / `End`: Jump to the end of the line (`len`).
+  - `Ctrl+U`: Delete all characters from cursor backward to start of line; preserves characters after cursor.
+  - `Ctrl+K`: Delete all characters from cursor forward to end of line; preserves characters before cursor.
+  - `Ctrl+W`: Delete previous word backward relative to cursor; skips whitespace and preserves text after cursor.
+  - `Up` / `Down` arrows: History navigation across shared command history with draft preservation (unsubmitted input restored when returning to draft).
+  - `Ctrl+L`: Clear screen while preserving current active input and cursor position.
+  - `Ctrl+D`: Context-sensitive EOF handling: closes active tab if input line is empty; protects unsubmitted input when non-empty.
+- **X11 Clipboard & Primary Selection**:
+  - Mouse text selection: Drag left mouse button (`Button1`) across terminal lines to highlight text.
+  - Visual selection rendering: Inverted highlight background for selected character cells.
+  - `Ctrl+Shift+C`: Copy highlighted selection to X11 `CLIPBOARD` and `PRIMARY` selections.
+  - `Ctrl+Shift+V`: Paste selection asynchronously from X11 clipboard into the input line at cursor position.
+  - Middle-click (`Button2`): Paste primary selection directly at cursor.
+- **Persistent Key Binding Engine & `bind` Built-in**:
+  - Fully configurable via `~/.terminatorrc` configuration file.
+  - Built-in command:
+    - `bind`: Lists all active key bindings and combinations.
+    - `bind <action> <combo>`: Binds an action (e.g., `bind clear-screen Ctrl+Alt+L`) with immediate validation and conflict detection.
+    - `bind --reset`: Restores all key bindings to factory defaults.
+  - Fallback safety: Automatically falls back to safe default bindings on parsing errors or syntax conflicts.
+
 ---
 
 ## 2. Dependencies & Installation

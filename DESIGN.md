@@ -243,3 +243,81 @@ To prevent terminal corruption, blank screens, or hangs, the `nano` command is e
    - In synchronous execution (`-c` flag), prints `terminator: nano: command forbidden\n` and sets exit code `1`.
    - In interactive worker execution, sends `IPC_MSG_OUTPUT` with `terminator: nano: command forbidden\n`, records exit status `1`, and emits `IPC_MSG_PROMPT` immediately.
 3. The prompt is restored without blanking or freezing the interface.
+
+---
+
+## 10. multiWatch Concurrency & Periodic Execution Architecture (Task 6)
+
+### Dedicated Lexer for Bracketed Commands
+The `multiWatch` built-in accepts a bracketed list of commands:
+```bash
+multiWatch ["cmd1", "cmd2", ...]
+```
+Because command strings inside brackets can contain internal commas (e.g. `awk -F,`), semicolons, and pipes, the raw command line is passed directly to `multiwatch_parse_args()` in `src/multiwatch.c`. The parser enforces:
+- Opening `[` and closing `]` brackets.
+- Non-empty command lists (rejection of `[]`).
+- Quoted command tokens (supporting both single and double quotes) with exact whitespace and internal character preservation.
+- Strict rejection of unquoted trailing arguments or malformed syntax with clear diagnostics.
+
+### Independent Concurrency & Process Isolation
+For each monitored command:
+1. An output pipe is created via `pipe()`.
+2. A child process is forked and places itself into its own process group via `setpgid(0, 0)`.
+3. The child connects `stdout` and `stderr` to the pipe write end and executes the command line using Terminator's shell parser and pipeline executor (`executor_run_line()`).
+
+### Non-Blocking Multiplexing with `poll()`
+Rather than executing commands sequentially or blocking on individual pipes, the main `multiwatch_run()` loop multiplexes:
+1. The GUI worker IPC channel (`read_ipc_fd`): Watches for `IPC_MSG_INT` or `IPC_MSG_QUIT`.
+2. All active child command output pipes.
+
+Output is read in non-blocking chunks into dynamically growing buffers (`output_buf`).
+
+### 2-Second Independent Periodic Scheduling
+When a child process terminates:
+1. `waitpid()` reaps the child process and EOF is detected on its pipe.
+2. The collected output is formatted into an atomic output block and emitted:
+   ```text
+   "<cmd>", <unix_timestamp>:
+   ----------------------------------------------------
+   <output>
+   ----------------------------------------------------
+   ```
+3. Monotonic time is sampled (`clock_gettime(CLOCK_MONOTONIC)`), and `next_run_time` is set to `finish_time + 2.0s`.
+4. The command does not block any other monitored command. Fast commands rerun independently every 2s after completion, while slow commands take as long as necessary without starvation.
+
+### Signal Handling and Child Process Group Teardown
+When `Ctrl+C` is triggered (via `SIGINT` or `IPC_MSG_INT`):
+1. `multiwatch_run` immediately breaks from the event loop.
+2. It sends `SIGINT` to all active child process groups (`kill(-cmd->pid, SIGINT)`).
+3. After a brief grace period (20ms), it delivers `SIGKILL` and reaps any remaining children with `waitpid()`.
+4. It outputs `^C\n`, sends `IPC_MSG_PROMPT` with status 130, and restores the interactive prompt cleanly.
+
+---
+
+## 11. Key Binding Architecture, Selection & Configuration Engine (Task 7)
+
+### Unified Key Action Mapping
+Key binding management is decoupled into `include/keybind.h` and `src/keybind.c`. Actions are represented by the `KeyAction` enum:
+- Navigation: `ACTION_MOVE_LEFT`, `ACTION_MOVE_RIGHT`, `ACTION_BEGINNING_OF_LINE`, `ACTION_END_OF_LINE`.
+- History: `ACTION_HISTORY_PREV`, `ACTION_HISTORY_NEXT` (with draft preservation).
+- Editing: `ACTION_DELETE_TO_START` (Ctrl+U), `ACTION_DELETE_TO_END` (Ctrl+K), `ACTION_DELETE_WORD` (Ctrl+W).
+- Terminal Control: `ACTION_CLEAR_SCREEN` (Ctrl+L), `ACTION_CLOSE_TAB` (Ctrl+D context-sensitive).
+- Clipboard: `ACTION_COPY` (Ctrl+Shift+C), `ACTION_PASTE` (Ctrl+Shift+V).
+- Tab Management: `ACTION_NEW_TAB`, `ACTION_CLOSE_TAB_SHORTCUT`, `ACTION_PREV_TAB`, `ACTION_NEXT_TAB`.
+
+### Configuration Persistence (`~/.terminatorrc`)
+- Loaded on startup via `keybind_init()` -> `keybind_load_config()`.
+- Syntax: `bind <action> <key_combo>` (e.g. `bind clear-screen Ctrl+Alt+L`).
+- Comments starting with `#` and blank lines are ignored.
+- Unknown actions, invalid modifiers, or conflicting combinations generate clear warnings without failing startup.
+- Custom bindings are modified dynamically at runtime using the `bind` built-in and automatically saved to disk.
+
+### Text Selection & X11 Clipboard Integration
+1. **Mouse Drag Selection**:
+   - `ButtonPress` on terminal body initializes anchor `(sel_start_col, sel_start_row)`.
+   - `MotionNotify` updates `(sel_end_col, sel_end_row)` and requests window redrawing.
+   - Character cells within selection are drawn with inverted background and foreground colors.
+2. **X11 Clipboard & Primary Selection**:
+   - On `Ctrl+Shift+C`, `XSetSelectionOwner()` acquires ownership of both `CLIPBOARD` and `XA_PRIMARY` atoms.
+   - Responds to `SelectionRequest` events by serving UTF-8 string chunks to requesting applications.
+   - On `Ctrl+Shift+V`, requests selection data asynchronously via `XConvertSelection` with atom `UTF8_STRING` and delivers contents directly into the active tab's input buffer at cursor position.

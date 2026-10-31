@@ -136,6 +136,18 @@ void terminal_insert_string(Tab *tab, const char *str) {
     }
 }
 
+void terminal_insert_pasted_text(Tab *tab, const char *str) {
+    if (!tab || !str) return;
+    while (*str) {
+        char c = *str++;
+        if (c == '\r') continue;
+        if (c == '\n') c = ' ';
+        if ((unsigned char)c >= 32 && (unsigned char)c != 127) {
+            terminal_insert_char(tab, c);
+        }
+    }
+}
+
 void terminal_delete_backspace(Tab *tab) {
     if (!tab || tab->cursor <= 0) return;
     size_t len = strlen(tab->input);

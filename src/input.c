@@ -5,14 +5,17 @@
 #include "gui.h"
 #include "util.h"
 #include "ipc.h"
+#include "keybind.h"
 #include <X11/Xutil.h>
 #include <X11/keysym.h>
+#include <X11/Xatom.h>
 #include <ctype.h>
 #include <signal.h>
 #include <stdio.h>
 #include <string.h>
 
-void input_handle_key_event(XKeyEvent *event, Shell *shell, bool *needs_redraw) {
+void input_handle_key_event(XKeyEvent *event, GUI *gui, Shell *shell, bool *needs_redraw) {
+    if (!shell && gui) shell = gui->shell;
     if (!shell || !event) return;
     Tab *tab = shell_get_active_tab(shell);
     if (!tab) return;
@@ -27,49 +30,6 @@ void input_handle_key_event(XKeyEvent *event, Shell *shell, bool *needs_redraw) 
     }
 
     bool is_ctrl = (event->state & ControlMask) != 0;
-    bool is_shift = (event->state & ShiftMask) != 0;
-
-    /* Handle Tab Creation and Closing shortcuts */
-    if (is_ctrl && is_shift) {
-        if (ksym == XK_t || ksym == XK_T) {
-            /* Ctrl+Shift+T: Open new tab */
-            shell_open_tab(shell, NULL);
-            return;
-        }
-        if (ksym == XK_w || ksym == XK_W) {
-            /* Ctrl+Shift+W: Close active tab */
-            shell_close_tab(shell, shell->active_tab_idx);
-            return;
-        }
-    }
-
-    /* Handle Ctrl shortcuts */
-    if (is_ctrl) {
-        if (ksym == XK_Prior) {
-            /* Ctrl+PageUp: Switch to previous tab */
-            if (shell->num_tabs > 1) {
-                int prev = (shell->active_tab_idx - 1 + shell->num_tabs) % shell->num_tabs;
-                shell_switch_tab(shell, prev);
-            }
-            return;
-        }
-        if (ksym == XK_Next) {
-            /* Ctrl+PageDown: Switch to next tab */
-            if (shell->num_tabs > 1) {
-                int next = (shell->active_tab_idx + 1) % shell->num_tabs;
-                shell_switch_tab(shell, next);
-            }
-            return;
-        }
-        if (ksym >= XK_1 && ksym <= XK_9) {
-            /* Ctrl+1..9: Direct tab switch */
-            int target_idx = (int)(ksym - XK_1);
-            if (target_idx < shell->num_tabs) {
-                shell_switch_tab(shell, target_idx);
-            }
-            return;
-        }
-    }
 
     /* If a foreground command or application is currently running */
     if (tab->state == SHELL_STATE_RUNNING) {
@@ -89,68 +49,118 @@ void input_handle_key_event(XKeyEvent *event, Shell *shell, bool *needs_redraw) 
         return;
     }
 
-    /* Handle Ctrl shortcuts for command editing */
-    if (is_ctrl) {
-        if (ksym == XK_c || ksym == XK_C) {
-            /* Display ^C and reset prompt */
-            char line_buf[MAX_INPUT_LEN * 2 + 16];
-            char prompt[MAX_INPUT_LEN];
-            shell_format_prompt(tab, prompt, sizeof(prompt));
-            snprintf(line_buf, sizeof(line_buf), "%s%s^C", prompt, tab->input);
-            terminal_append_line(tab, line_buf, LINE_TYPE_PROMPT);
-            terminal_clear_input(tab);
-            tab->accumulated_cmd[0] = '\0';
-            tab->in_continuation = false;
-            tab->state = SHELL_STATE_READY;
-            terminal_show_prompt(tab);
+    /* Check configured keybindings */
+    KeyAction action = keybind_match(ksym, event->state);
+    switch (action) {
+        case ACTION_NEW_TAB:
+            shell_open_tab(shell, NULL);
             return;
-        }
 
-        if (ksym == XK_l || ksym == XK_L) {
-            /* Ctrl+L: Clear screen */
+        case ACTION_CLOSE_TAB_SHORTCUT:
+            shell_close_tab(shell, shell->active_tab_idx);
+            return;
+
+        case ACTION_PREV_TAB:
+            if (shell->num_tabs > 1) {
+                int prev = (shell->active_tab_idx - 1 + shell->num_tabs) % shell->num_tabs;
+                shell_switch_tab(shell, prev);
+            }
+            return;
+
+        case ACTION_NEXT_TAB:
+            if (shell->num_tabs > 1) {
+                int next = (shell->active_tab_idx + 1) % shell->num_tabs;
+                shell_switch_tab(shell, next);
+            }
+            return;
+
+        case ACTION_BEGINNING_OF_LINE:
+            terminal_cursor_home(tab);
+            return;
+
+        case ACTION_END_OF_LINE:
+            terminal_cursor_end(tab);
+            return;
+
+        case ACTION_MOVE_LEFT:
+            terminal_cursor_left(tab);
+            return;
+
+        case ACTION_MOVE_RIGHT:
+            terminal_cursor_right(tab);
+            return;
+
+        case ACTION_HISTORY_PREV:
+            terminal_history_prev(tab);
+            return;
+
+        case ACTION_HISTORY_NEXT:
+            terminal_history_next(tab);
+            return;
+
+        case ACTION_DELETE_TO_START:
+            terminal_delete_to_start(tab);
+            return;
+
+        case ACTION_DELETE_TO_END:
+            terminal_delete_to_end(tab);
+            return;
+
+        case ACTION_DELETE_WORD:
+            terminal_delete_word_backward(tab);
+            return;
+
+        case ACTION_CLEAR_SCREEN:
             terminal_clear_screen(tab);
             tab->state = SHELL_STATE_READY;
             terminal_show_prompt(tab);
             return;
-        }
 
-        if (ksym == XK_a || ksym == XK_A) {
-            /* Ctrl+A: Beginning of line */
-            terminal_cursor_home(tab);
-            return;
-        }
-
-        if (ksym == XK_e || ksym == XK_E) {
-            /* Ctrl+E: End of line */
-            terminal_cursor_end(tab);
-            return;
-        }
-
-        if (ksym == XK_u || ksym == XK_U) {
-            /* Ctrl+U: Delete to beginning of line */
-            terminal_delete_to_start(tab);
-            return;
-        }
-
-        if (ksym == XK_k || ksym == XK_K) {
-            /* Ctrl+K: Delete to end of line */
-            terminal_delete_to_end(tab);
-            return;
-        }
-
-        if (ksym == XK_w || ksym == XK_W) {
-            /* Ctrl+W: Delete word backward */
-            terminal_delete_word_backward(tab);
-            return;
-        }
-
-        if (ksym == XK_d || ksym == XK_D) {
-            /* Ctrl+D: Exit shell or close active tab if input line is empty */
+        case ACTION_CLOSE_TAB:
+            /* Ctrl+D: Close tab only if input line is empty; if non-empty, do nothing to protect input */
             if (tab->input[0] == '\0' && tab->running_pid <= 0) {
                 shell_close_tab(shell, shell->active_tab_idx);
-                return;
             }
+            return;
+
+        case ACTION_COPY:
+            if (gui) {
+                gui_copy_selection(gui, tab);
+            }
+            return;
+
+        case ACTION_PASTE:
+            if (gui) {
+                gui_request_paste(gui);
+            }
+            return;
+
+        default:
+            break;
+    }
+
+    /* Direct Ctrl+1..9 tab switching */
+    if (is_ctrl && ksym >= XK_1 && ksym <= XK_9) {
+        int target_idx = (int)(ksym - XK_1);
+        if (target_idx < shell->num_tabs) {
+            shell_switch_tab(shell, target_idx);
         }
+        return;
+    }
+
+    /* Ctrl+C at prompt: cancel current line, display ^C and show clean prompt */
+    if (is_ctrl && (ksym == XK_c || ksym == XK_C)) {
+        char line_buf[MAX_INPUT_LEN * 2 + 16];
+        char prompt[MAX_INPUT_LEN];
+        shell_format_prompt(tab, prompt, sizeof(prompt));
+        snprintf(line_buf, sizeof(line_buf), "%s%s^C", prompt, tab->input);
+        terminal_append_line(tab, line_buf, LINE_TYPE_PROMPT);
+        terminal_clear_input(tab);
+        tab->accumulated_cmd[0] = '\0';
+        tab->in_continuation = false;
+        tab->state = SHELL_STATE_READY;
+        terminal_show_prompt(tab);
+        return;
     }
 
     /* Standard navigation and editing keys */
@@ -293,6 +303,11 @@ void input_handle_button_press(XButtonEvent *event, GUI *gui) {
         terminal_scroll_down(tab, 3);
         gui->needs_redraw = true;
         return;
+    } else if (event->button == Button2) {
+        /* Middle Click: Paste from PRIMARY selection */
+        XConvertSelection(gui->dpy, XA_PRIMARY, gui->utf8_string, gui->sel_prop_atom, gui->win, CurrentTime);
+        XFlush(gui->dpy);
+        return;
     }
 
     if (event->button != Button1) return;
@@ -369,6 +384,34 @@ void input_handle_button_press(XButtonEvent *event, GUI *gui) {
             return;
         }
     }
+
+    /* 3. Text Selection in Terminal Area */
+    int term_top = bar_h + gui->theme.padding_y;
+    int stat_y = gui->height - gui->theme.status_bar_height;
+    int term_bottom = stat_y - gui->theme.padding_y;
+    int line_h = gui->theme.font_height + 6;
+    if (line_h < 14) line_h = 18;
+
+    if (event->y >= term_top && event->y < term_bottom && event->x < gui->width - 16) {
+        int total_rows = tab->num_lines + (tab->state != SHELL_STATE_RUNNING ? 1 : 0);
+        int visible_rows = (term_bottom - term_top) / line_h;
+        if (visible_rows <= 0) visible_rows = 1;
+        int start_row = total_rows - visible_rows - tab->scroll_offset;
+        if (start_row < 0) start_row = 0;
+
+        int vis_r = (event->y - term_top) / line_h;
+        int vis_c = (event->x - gui->theme.padding_x) / gui->theme.font_width;
+        if (vis_c < 0) vis_c = 0;
+
+        gui->sel_start_row = start_row + vis_r;
+        gui->sel_start_col = vis_c;
+        gui->sel_end_row = gui->sel_start_row;
+        gui->sel_end_col = gui->sel_start_col;
+        gui->sel_dragging = true;
+        gui->sel_active = false;
+        gui->needs_redraw = true;
+        return;
+    }
 }
 
 void input_handle_button_release(XButtonEvent *event, GUI *gui) {
@@ -378,31 +421,79 @@ void input_handle_button_release(XButtonEvent *event, GUI *gui) {
             gui->sb_dragging = false;
             gui->needs_redraw = true;
         }
+        if (gui->sel_dragging) {
+            gui->sel_dragging = false;
+            if (gui->sel_active) {
+                Tab *tab = shell_get_active_tab(gui->shell);
+                if (tab) {
+                    char *sel_text = gui_get_selected_text(gui, tab);
+                    if (sel_text && *sel_text) {
+                        free(gui->primary_text);
+                        gui->primary_text = sel_text;
+                        XSetSelectionOwner(gui->dpy, XA_PRIMARY, gui->win, CurrentTime);
+                        XFlush(gui->dpy);
+                    } else {
+                        free(sel_text);
+                    }
+                }
+            }
+            gui->needs_redraw = true;
+        }
     }
 }
 
 void input_handle_motion(XMotionEvent *event, GUI *gui) {
-    if (!gui || !event || !gui->shell || !gui->sb_dragging) return;
+    if (!gui || !event || !gui->shell) return;
     Tab *tab = shell_get_active_tab(gui->shell);
     if (!tab) return;
 
-    ScrollbarGeom geom;
-    if (!gui_get_scrollbar_geom(gui, tab, &geom) || geom.max_scroll <= 0) return;
+    if (gui->sb_dragging) {
+        ScrollbarGeom geom;
+        if (!gui_get_scrollbar_geom(gui, tab, &geom) || geom.max_scroll <= 0) return;
 
-    int travel = geom.sb_h - geom.thumb_h;
-    if (travel <= 0) return;
+        int travel = geom.sb_h - geom.thumb_h;
+        if (travel <= 0) return;
 
-    int thumb_y = event->y - gui->sb_thumb_grab_y;
-    if (thumb_y < geom.sb_y) thumb_y = geom.sb_y;
-    if (thumb_y > geom.sb_y + travel) thumb_y = geom.sb_y + travel;
+        int thumb_y = event->y - gui->sb_thumb_grab_y;
+        if (thumb_y < geom.sb_y) thumb_y = geom.sb_y;
+        if (thumb_y > geom.sb_y + travel) thumb_y = geom.sb_y + travel;
 
-    float fraction = (float)(thumb_y - geom.sb_y) / (float)travel;
-    int new_offset = (int)((1.0f - fraction) * geom.max_scroll + 0.5f);
-    if (new_offset < 0) new_offset = 0;
-    if (new_offset > geom.max_scroll) new_offset = geom.max_scroll;
+        float fraction = (float)(thumb_y - geom.sb_y) / (float)travel;
+        int new_offset = (int)((1.0f - fraction) * geom.max_scroll + 0.5f);
+        if (new_offset < 0) new_offset = 0;
+        if (new_offset > geom.max_scroll) new_offset = geom.max_scroll;
 
-    if (new_offset != tab->scroll_offset) {
-        tab->scroll_offset = new_offset;
+        if (new_offset != tab->scroll_offset) {
+            tab->scroll_offset = new_offset;
+            gui->needs_redraw = true;
+        }
+        return;
+    }
+
+    if (gui->sel_dragging) {
+        int bar_h = gui->theme.top_bar_height;
+        int term_top = bar_h + gui->theme.padding_y;
+        int stat_y = gui->height - gui->theme.status_bar_height;
+        int term_bottom = stat_y - gui->theme.padding_y;
+        int line_h = gui->theme.font_height + 6;
+        if (line_h < 14) line_h = 18;
+
+        int total_rows = tab->num_lines + (tab->state != SHELL_STATE_RUNNING ? 1 : 0);
+        int visible_rows = (term_bottom - term_top) / line_h;
+        if (visible_rows <= 0) visible_rows = 1;
+        int start_row = total_rows - visible_rows - tab->scroll_offset;
+        if (start_row < 0) start_row = 0;
+
+        int vis_r = (event->y - term_top) / line_h;
+        int vis_c = (event->x - gui->theme.padding_x) / gui->theme.font_width;
+        if (vis_c < 0) vis_c = 0;
+
+        gui->sel_end_row = start_row + vis_r;
+        gui->sel_end_col = vis_c;
+        if (gui->sel_start_row != gui->sel_end_row || gui->sel_start_col != gui->sel_end_col) {
+            gui->sel_active = true;
+        }
         gui->needs_redraw = true;
+        return;
     }
 }

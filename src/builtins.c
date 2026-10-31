@@ -4,6 +4,8 @@
 #include "parser.h"
 #include "shell.h"
 #include "history.h"
+#include "keybind.h"
+#include "multiwatch.h"
 #include <stdio.h>
 #include <string.h>
 #include <errno.h>
@@ -19,6 +21,7 @@ bool builtin_is_builtin(const char *name) {
             strcmp(name, "exit") == 0 ||
             strcmp(name, "history") == 0 ||
             strcmp(name, "multiWatch") == 0 ||
+            strcmp(name, "bind") == 0 ||
             strcmp(name, "jobs") == 0 ||
             strcmp(name, "fg") == 0 ||
             strcmp(name, "bg") == 0 ||
@@ -255,7 +258,37 @@ static int builtin_bg(const Command *cmd, Tab *tab) {
 static int builtin_multiwatch(const Command *cmd, Tab *tab) {
     (void)cmd;
     (void)tab;
-    fprintf(stderr, "terminator: multiWatch: requires Tasks 6-11 (Phase 2)\n");
+    /* multiWatch execution is routed to multiwatch_run in executor */
+    return 0;
+}
+
+static int builtin_bind(const Command *cmd, Tab *tab) {
+    (void)tab;
+    if (cmd->argc == 1) {
+        keybind_list(stdout);
+        fflush(stdout);
+        return 0;
+    }
+    if (cmd->argc == 2 && strcmp(cmd->argv[1], "--reset") == 0) {
+        keybind_reset_defaults();
+        keybind_save_config(NULL);
+        printf("terminator: key bindings reset to defaults\n");
+        fflush(stdout);
+        return 0;
+    }
+    if (cmd->argc == 3) {
+        const char *action = cmd->argv[1];
+        const char *combo = cmd->argv[2];
+        if (keybind_set(action, combo)) {
+            keybind_save_config(NULL);
+            printf("bound '%s' to '%s'\n", action, combo);
+            fflush(stdout);
+            return 0;
+        } else {
+            return 1;
+        }
+    }
+    fprintf(stderr, "usage: bind [action combo | --reset]\n");
     return 1;
 }
 
@@ -284,6 +317,8 @@ int builtin_execute(const Command *cmd, Tab *tab) {
         return builtin_bg(cmd, tab);
     } else if (strcmp(name, "multiWatch") == 0) {
         return builtin_multiwatch(cmd, tab);
+    } else if (strcmp(name, "bind") == 0) {
+        return builtin_bind(cmd, tab);
     }
 
     return 127;

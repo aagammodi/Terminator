@@ -98,6 +98,7 @@ void terminal_tab_destroy(Tab *tab);
 /* Input buffer operations */
 void terminal_insert_char(Tab *tab, char c);
 void terminal_insert_string(Tab *tab, const char *str);
+void terminal_insert_pasted_text(Tab *tab, const char *str);
 void terminal_delete_backspace(Tab *tab);
 void terminal_delete_char(Tab *tab);
 void terminal_cursor_left(Tab *tab);

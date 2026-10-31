@@ -4,6 +4,7 @@
 #include "executor.h"
 #include "util.h"
 #include "ipc.h"
+#include "keybind.h"
 #include <stdio.h>
 #include <string.h>
 #include <strings.h>
@@ -191,6 +192,9 @@ int main(int argc, char **argv) {
             use_process_mode = true;
         }
     }
+
+    /* Initialize Key Bindings */
+    keybind_init();
 
     /* Initialize Shell with 1 Tab in requested architecture mode */
     Shell *shell = shell_create(NULL, use_process_mode);

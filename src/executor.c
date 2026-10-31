@@ -4,6 +4,7 @@
 #include "redirection.h"
 #include "util.h"
 #include "ipc.h"
+#include "multiwatch.h"
 #include <sys/wait.h>
 #include <poll.h>
 #include <signal.h>
@@ -88,6 +89,12 @@ int executor_run_line(Tab *tab, const char *cmd_line) {
     if (pipeline->num_commands == 1 &&
         pipeline->commands[0].argc > 0 &&
         builtin_is_builtin(pipeline->commands[0].argv[0])) {
+
+        if (strcmp(pipeline->commands[0].argv[0], "multiWatch") == 0) {
+            int ret = multiwatch_run(tab, cmd_line, -1, -1);
+            pipeline_free(pipeline);
+            return ret;
+        }
 
         Command *cmd = &pipeline->commands[0];
 
@@ -213,6 +220,12 @@ int executor_run_line_worker(Tab *tab, const char *cmd_line, int read_ipc_fd, in
     if (pipeline->num_commands == 1 &&
         pipeline->commands[0].argc > 0 &&
         builtin_is_builtin(pipeline->commands[0].argv[0])) {
+
+        if (strcmp(pipeline->commands[0].argv[0], "multiWatch") == 0) {
+            int ret = multiwatch_run(tab, cmd_line, read_ipc_fd, write_ipc_fd);
+            pipeline_free(pipeline);
+            return ret;
+        }
 
         Command *cmd = &pipeline->commands[0];
 

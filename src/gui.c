@@ -154,6 +154,21 @@ GUI *gui_create(Shell *shell, int width, int height) {
         (unsigned int)DefaultDepth(dpy, screen)
     );
 
+    /* Initialize Selection and Clipboard state */
+    gui->sel_active = false;
+    gui->sel_dragging = false;
+    gui->sel_start_row = 0;
+    gui->sel_start_col = 0;
+    gui->sel_end_row = 0;
+    gui->sel_end_col = 0;
+    gui->clipboard_text = NULL;
+    gui->primary_text = NULL;
+
+    gui->clipboard_atom = XInternAtom(dpy, "CLIPBOARD", False);
+    gui->utf8_string = utf8_string;
+    gui->targets_atom = XInternAtom(dpy, "TARGETS", False);
+    gui->sel_prop_atom = XInternAtom(dpy, "TERMINATOR_SELECTION", False);
+
     XMapWindow(dpy, gui->win);
     XFlush(dpy);
 
@@ -162,6 +177,9 @@ GUI *gui_create(Shell *shell, int width, int height) {
 
 void gui_destroy(GUI *gui) {
     if (!gui) return;
+
+    free(gui->clipboard_text);
+    free(gui->primary_text);
 
     if (gui->dpy) {
         if (gui->back_buffer) {
@@ -177,6 +195,104 @@ void gui_destroy(GUI *gui) {
         XCloseDisplay(gui->dpy);
     }
     free(gui);
+}
+
+char *gui_get_selected_text(const GUI *gui, const Tab *tab) {
+    if (!gui || !tab || !gui->sel_active) return NULL;
+
+    int r1 = gui->sel_start_row;
+    int c1 = gui->sel_start_col;
+    int r2 = gui->sel_end_row;
+    int c2 = gui->sel_end_col;
+
+    if (r1 > r2 || (r1 == r2 && c1 > c2)) {
+        int tr = r1; r1 = r2; r2 = tr;
+        int tc = c1; c1 = c2; c2 = tc;
+    }
+
+    size_t cap = 512;
+    size_t len = 0;
+    char *res = xmalloc(cap);
+    res[0] = '\0';
+
+    for (int r = r1; r <= r2; r++) {
+        const char *line_text = "";
+        char input_line_buf[MAX_INPUT_LEN * 2];
+
+        if (r < tab->num_lines) {
+            line_text = tab->lines[r].text ? tab->lines[r].text : "";
+        } else if (r == tab->num_lines && tab->state != SHELL_STATE_RUNNING) {
+            char prompt_buf[MAX_INPUT_LEN];
+            shell_format_prompt((Tab *)tab, prompt_buf, sizeof(prompt_buf));
+            snprintf(input_line_buf, sizeof(input_line_buf), "%s%s", prompt_buf, tab->input);
+            line_text = input_line_buf;
+        }
+
+        int line_len = (int)strlen(line_text);
+        int start_col = (r == r1) ? c1 : 0;
+        int end_col = (r == r2) ? c2 : line_len;
+
+        if (start_col < 0) start_col = 0;
+        if (start_col > line_len) start_col = line_len;
+        if (end_col < start_col) end_col = start_col;
+        if (end_col > line_len) end_col = line_len;
+
+        int span = end_col - start_col;
+        if (span > 0) {
+            while (len + (size_t)span + 2 >= cap) {
+                cap *= 2;
+                res = xrealloc(res, cap);
+            }
+            memcpy(res + len, line_text + start_col, (size_t)span);
+            len += (size_t)span;
+        }
+
+        if (r < r2) {
+            while (len + 2 >= cap) {
+                cap *= 2;
+                res = xrealloc(res, cap);
+            }
+            res[len++] = '\n';
+        }
+    }
+
+    res[len] = '\0';
+    return res;
+}
+
+void gui_copy_selection(GUI *gui, Tab *tab) {
+    if (!gui || !tab) return;
+    char *text = gui_get_selected_text(gui, tab);
+    if (!text || text[0] == '\0') {
+        free(text);
+        return;
+    }
+
+    free(gui->clipboard_text);
+    gui->clipboard_text = text;
+
+    free(gui->primary_text);
+    gui->primary_text = xstrdup(text);
+
+    XSetSelectionOwner(gui->dpy, gui->clipboard_atom, gui->win, CurrentTime);
+    XSetSelectionOwner(gui->dpy, XA_PRIMARY, gui->win, CurrentTime);
+    XFlush(gui->dpy);
+}
+
+void gui_request_paste(GUI *gui) {
+    if (!gui) return;
+    if (gui->clipboard_text && XGetSelectionOwner(gui->dpy, gui->clipboard_atom) == gui->win) {
+        Tab *tab = shell_get_active_tab(gui->shell);
+        if (tab && tab->state != SHELL_STATE_RUNNING) {
+            terminal_insert_pasted_text(tab, gui->clipboard_text);
+            gui->needs_redraw = true;
+            return;
+        }
+    }
+
+    XConvertSelection(gui->dpy, gui->clipboard_atom, gui->utf8_string,
+                      gui->sel_prop_atom, gui->win, CurrentTime);
+    XFlush(gui->dpy);
 }
 
 void gui_redraw(GUI *gui) {
@@ -330,6 +446,25 @@ void gui_redraw(GUI *gui) {
     int render_y = term_top + t->font_ascent;
 
     for (int r = start_row; r < start_row + visible_rows && r < total_rows; r++) {
+        if (gui->sel_active) {
+            int r1 = gui->sel_start_row, c1 = gui->sel_start_col;
+            int r2 = gui->sel_end_row, c2 = gui->sel_end_col;
+            if (r1 > r2 || (r1 == r2 && c1 > c2)) {
+                int tr = r1; r1 = r2; r2 = tr;
+                int tc = c1; c1 = c2; c2 = tc;
+            }
+            if (r >= r1 && r <= r2) {
+                int col_start = (r == r1) ? c1 : 0;
+                int col_end = (r == r2) ? c2 : 120;
+                if (col_end > col_start) {
+                    int hx = t->padding_x + col_start * t->font_width;
+                    int hw = (col_end - col_start) * t->font_width;
+                    int hy = render_y - t->font_ascent;
+                    fill_rect(gui, hx, hy, hw, line_h, theme_color(t, COLOR_SURFACE_ELEV));
+                }
+            }
+        }
+
         if (r < tab->num_lines) {
             TerminalLine *tl = &tab->lines[r];
 
@@ -447,7 +582,7 @@ void gui_run_event_loop(GUI *gui) {
 
             switch (ev.type) {
                 case KeyPress:
-                    input_handle_key_event(&ev.xkey, gui->shell, &gui->needs_redraw);
+                    input_handle_key_event(&ev.xkey, gui, gui->shell, &gui->needs_redraw);
                     break;
 
                 case ButtonPress:
@@ -488,6 +623,64 @@ void gui_run_event_loop(GUI *gui) {
                     if ((Atom)ev.xclient.data.l[0] == gui->wm_delete_window) {
                         gui->shell->running = false;
                     }
+                    break;
+
+                case SelectionRequest: {
+                    XSelectionRequestEvent *req = &ev.xselectionrequest;
+                    XSelectionEvent resp;
+                    resp.type = SelectionNotify;
+                    resp.display = req->display;
+                    resp.requestor = req->requestor;
+                    resp.selection = req->selection;
+                    resp.target = req->target;
+                    resp.time = req->time;
+                    resp.property = req->property;
+
+                    const char *text_to_send = (req->selection == XA_PRIMARY) ?
+                        (gui->primary_text ? gui->primary_text : gui->clipboard_text) :
+                        (gui->clipboard_text ? gui->clipboard_text : gui->primary_text);
+
+                    if (req->target == gui->targets_atom) {
+                        Atom supported[2] = { gui->utf8_string, XA_STRING };
+                        XChangeProperty(req->display, req->requestor, req->property,
+                                        XA_ATOM, 32, PropModeReplace,
+                                        (unsigned char *)supported, 2);
+                    } else if (req->target == gui->utf8_string || req->target == XA_STRING) {
+                        const char *t_str = text_to_send ? text_to_send : "";
+                        XChangeProperty(req->display, req->requestor, req->property,
+                                        req->target, 8, PropModeReplace,
+                                        (const unsigned char *)t_str, (int)strlen(t_str));
+                    } else {
+                        resp.property = None;
+                    }
+                    XSendEvent(req->display, req->requestor, False, 0, (XEvent *)&resp);
+                    XFlush(req->display);
+                    break;
+                }
+
+                case SelectionNotify: {
+                    XSelectionEvent *sel = &ev.xselection;
+                    if (sel->property != None) {
+                        Atom type;
+                        int format;
+                        unsigned long nitems, bytes_after;
+                        unsigned char *prop = NULL;
+                        if (XGetWindowProperty(gui->dpy, gui->win, sel->property, 0, 65536, True,
+                                               AnyPropertyType, &type, &format, &nitems, &bytes_after, &prop) == Success && prop) {
+                            Tab *tab = shell_get_active_tab(gui->shell);
+                            if (tab && tab->state != SHELL_STATE_RUNNING) {
+                                terminal_insert_pasted_text(tab, (const char *)prop);
+                                gui->needs_redraw = true;
+                            }
+                            XFree(prop);
+                        }
+                    }
+                    break;
+                }
+
+                case SelectionClear:
+                    gui->sel_active = false;
+                    gui->needs_redraw = true;
                     break;
 
                 default:

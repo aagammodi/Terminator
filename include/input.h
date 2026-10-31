@@ -8,7 +8,7 @@
 struct GUI;
 
 /* Handle X11 KeyPress event */
-void input_handle_key_event(XKeyEvent *event, Shell *shell, bool *needs_redraw);
+void input_handle_key_event(XKeyEvent *event, struct GUI *gui, Shell *shell, bool *needs_redraw);
 
 /* Handle X11 ButtonPress, ButtonRelease, and Motion events */
 void input_handle_button_press(XButtonEvent *event, struct GUI *gui);

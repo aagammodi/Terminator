@@ -38,6 +38,7 @@ def run_interactive_session(extra_args=None, mode_name="Thread Mode"):
         os.dup2(slave, 2)
         os.close(slave)
         os.environ["TERM"] = "xterm-256color"
+        os.environ["TERMINATORRC"] = f"/tmp/.terminatorrc_test_{os.getpid()}"
         cmd = [terminator_bin, "--test"] + extra_args
         try:
             os.execv(terminator_bin, cmd)
@@ -147,7 +148,36 @@ def run_interactive_session(extra_args=None, mode_name="Thread Mode"):
     res_nano = read_until("@terminator> ", timeout=1.5)
     check("Forbidden command 'nano' rejected cleanly", "nano: command forbidden" in res_nano, f"Output was: {repr(res_nano)}")
 
-    # 13. Clean exit
+    # 13. Task 7: bind built-in command inspection and configuration
+    send_cmd("bind")
+    res_bind = read_until("@terminator> ", timeout=1.5)
+    check("Built-in 'bind' lists active keybindings", "beginning-of-line" in res_bind and "Ctrl+Shift+C" in res_bind, f"Output was: {repr(res_bind)}")
+
+    send_cmd("bind clear_screen Ctrl+Alt+L")
+    res_bind_set = read_until("@terminator> ", timeout=1.5)
+    check("Built-in 'bind <action> <combo>' updates binding", "bound 'clear_screen' to 'Ctrl+Alt+L'" in res_bind_set, f"Output was: {repr(res_bind_set)}")
+
+    send_cmd("bind --reset")
+    res_bind_reset = read_until("@terminator> ", timeout=1.5)
+    check("Built-in 'bind --reset' restores defaults", "key bindings reset to defaults" in res_bind_reset, f"Output was: {repr(res_bind_reset)}")
+
+    # 14. Task 6: multiWatch concurrent execution, formatting, and Ctrl+C interruption
+    send_cmd('multiWatch ["echo mw_alive", "date +%Y"]')
+    res_mw = read_until("----------------------------------------------------", timeout=2.5)
+    check("multiWatch outputs concurrent block header and dashes", "----------------------------------------------------" in res_mw and "mw_alive" in res_mw, f"Output was: {repr(res_mw)}")
+
+    # Interrupt multiWatch with Ctrl+C
+    time.sleep(0.1)
+    os.write(master, b"\x03")
+    res_mw_int = read_until("@terminator> ", timeout=2.5)
+    check("multiWatch cleanly interrupted by Ctrl+C and restores prompt", "@terminator> " in res_mw_int, f"Output was: {repr(res_mw_int)}")
+
+    # Verify shell remains fully operational after multiWatch Ctrl+C
+    send_cmd("echo mw_recovered_healthy")
+    res_mw_rec = read_until("@terminator> ", timeout=1.5)
+    check("Shell remains fully healthy after multiWatch cancellation", "mw_recovered_healthy" in res_mw_rec, f"Output was: {repr(res_mw_rec)}")
+
+    # 15. Clean exit
     send_cmd("exit")
     time.sleep(0.1)
     os.close(master)

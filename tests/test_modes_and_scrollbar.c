@@ -134,23 +134,43 @@ static void test_thread_mode_architecture(void) {
     IPCHeader hdr;
     while (ipc_recv_header(tab0->from_worker_pipe[0], &hdr)) {
         if (hdr.type == IPC_MSG_OUTPUT) {
-            char buf[128];
+            char buf[MAX_CMD_LEN];
             if (hdr.length > 0 && hdr.length < sizeof(buf)) {
                 ipc_recv_payload(tab0->from_worker_pipe[0], buf, hdr.length);
                 buf[hdr.length] = '\0';
                 if (strstr(buf, "term_thread_test_0")) {
                     got_output0 = true;
                 }
+            } else {
+                uint32_t rem = hdr.length;
+                while (rem > 0) {
+                    char dummy[256];
+                    uint32_t chunk = (rem < sizeof(dummy)) ? rem : (uint32_t)sizeof(dummy);
+                    if (!ipc_recv_payload(tab0->from_worker_pipe[0], dummy, chunk)) break;
+                    rem -= chunk;
+                }
             }
         } else if (hdr.type == IPC_MSG_PROMPT) {
             int status = 0;
-            ipc_recv_payload(tab0->from_worker_pipe[0], &status, sizeof(status));
+            if (hdr.length >= sizeof(status)) {
+                ipc_recv_payload(tab0->from_worker_pipe[0], &status, sizeof(status));
+            }
+            uint32_t rem = (hdr.length > sizeof(status)) ? (hdr.length - sizeof(status)) : 0;
+            while (rem > 0) {
+                char dummy[256];
+                uint32_t chunk = (rem < sizeof(dummy)) ? rem : (uint32_t)sizeof(dummy);
+                if (!ipc_recv_payload(tab0->from_worker_pipe[0], dummy, chunk)) break;
+                rem -= chunk;
+            }
             got_prompt0 = true;
             break;
         } else {
-            if (hdr.length > 0) {
+            uint32_t rem = hdr.length;
+            while (rem > 0) {
                 char dummy[256];
-                ipc_recv_payload(tab0->from_worker_pipe[0], dummy, hdr.length);
+                uint32_t chunk = (rem < sizeof(dummy)) ? rem : (uint32_t)sizeof(dummy);
+                if (!ipc_recv_payload(tab0->from_worker_pipe[0], dummy, chunk)) break;
+                rem -= chunk;
             }
         }
     }
@@ -173,16 +193,36 @@ static void test_thread_mode_architecture(void) {
                     got_cwd1 = true;
                     safe_strncpy(tab1->cwd, buf, sizeof(tab1->cwd));
                 }
+            } else {
+                uint32_t rem = hdr.length;
+                while (rem > 0) {
+                    char dummy[256];
+                    uint32_t chunk = (rem < sizeof(dummy)) ? rem : (uint32_t)sizeof(dummy);
+                    if (!ipc_recv_payload(tab1->from_worker_pipe[0], dummy, chunk)) break;
+                    rem -= chunk;
+                }
             }
         } else if (hdr.type == IPC_MSG_PROMPT) {
             int status = 0;
-            ipc_recv_payload(tab1->from_worker_pipe[0], &status, sizeof(status));
+            if (hdr.length >= sizeof(status)) {
+                ipc_recv_payload(tab1->from_worker_pipe[0], &status, sizeof(status));
+            }
+            uint32_t rem = (hdr.length > sizeof(status)) ? (hdr.length - sizeof(status)) : 0;
+            while (rem > 0) {
+                char dummy[256];
+                uint32_t chunk = (rem < sizeof(dummy)) ? rem : (uint32_t)sizeof(dummy);
+                if (!ipc_recv_payload(tab1->from_worker_pipe[0], dummy, chunk)) break;
+                rem -= chunk;
+            }
             got_prompt1 = true;
             break;
         } else {
-            if (hdr.length > 0) {
+            uint32_t rem = hdr.length;
+            while (rem > 0) {
                 char dummy[256];
-                ipc_recv_payload(tab1->from_worker_pipe[0], dummy, hdr.length);
+                uint32_t chunk = (rem < sizeof(dummy)) ? rem : (uint32_t)sizeof(dummy);
+                if (!ipc_recv_payload(tab1->from_worker_pipe[0], dummy, chunk)) break;
+                rem -= chunk;
             }
         }
     }
@@ -227,23 +267,43 @@ static void test_process_mode_architecture(void) {
     IPCHeader hdr;
     while (ipc_recv_header(tab0->from_worker_pipe[0], &hdr)) {
         if (hdr.type == IPC_MSG_OUTPUT) {
-            char buf[128];
+            char buf[MAX_CMD_LEN];
             if (hdr.length > 0 && hdr.length < sizeof(buf)) {
                 ipc_recv_payload(tab0->from_worker_pipe[0], buf, hdr.length);
                 buf[hdr.length] = '\0';
                 if (strstr(buf, "process_mode_tab0_test")) {
                     got_output0 = true;
                 }
+            } else {
+                uint32_t rem = hdr.length;
+                while (rem > 0) {
+                    char dummy[256];
+                    uint32_t chunk = (rem < sizeof(dummy)) ? rem : (uint32_t)sizeof(dummy);
+                    if (!ipc_recv_payload(tab0->from_worker_pipe[0], dummy, chunk)) break;
+                    rem -= chunk;
+                }
             }
         } else if (hdr.type == IPC_MSG_PROMPT) {
             int status = 0;
-            ipc_recv_payload(tab0->from_worker_pipe[0], &status, sizeof(status));
+            if (hdr.length >= sizeof(status)) {
+                ipc_recv_payload(tab0->from_worker_pipe[0], &status, sizeof(status));
+            }
+            uint32_t rem = (hdr.length > sizeof(status)) ? (hdr.length - sizeof(status)) : 0;
+            while (rem > 0) {
+                char dummy[256];
+                uint32_t chunk = (rem < sizeof(dummy)) ? rem : (uint32_t)sizeof(dummy);
+                if (!ipc_recv_payload(tab0->from_worker_pipe[0], dummy, chunk)) break;
+                rem -= chunk;
+            }
             got_prompt0 = true;
             break;
         } else {
-            if (hdr.length > 0) {
+            uint32_t rem = hdr.length;
+            while (rem > 0) {
                 char dummy[256];
-                ipc_recv_payload(tab0->from_worker_pipe[0], dummy, hdr.length);
+                uint32_t chunk = (rem < sizeof(dummy)) ? rem : (uint32_t)sizeof(dummy);
+                if (!ipc_recv_payload(tab0->from_worker_pipe[0], dummy, chunk)) break;
+                rem -= chunk;
             }
         }
     }
@@ -268,22 +328,42 @@ static void test_process_mode_architecture(void) {
     bool tab0_alive = false;
     while (ipc_recv_header(tab0->from_worker_pipe[0], &hdr)) {
         if (hdr.type == IPC_MSG_OUTPUT) {
-            char buf[128];
+            char buf[MAX_CMD_LEN];
             if (hdr.length > 0 && hdr.length < sizeof(buf)) {
                 ipc_recv_payload(tab0->from_worker_pipe[0], buf, hdr.length);
                 buf[hdr.length] = '\0';
                 if (strstr(buf, "tab0_survived")) {
                     tab0_alive = true;
                 }
+            } else {
+                uint32_t rem = hdr.length;
+                while (rem > 0) {
+                    char dummy[256];
+                    uint32_t chunk = (rem < sizeof(dummy)) ? rem : (uint32_t)sizeof(dummy);
+                    if (!ipc_recv_payload(tab0->from_worker_pipe[0], dummy, chunk)) break;
+                    rem -= chunk;
+                }
             }
         } else if (hdr.type == IPC_MSG_PROMPT) {
             int status = 0;
-            ipc_recv_payload(tab0->from_worker_pipe[0], &status, sizeof(status));
+            if (hdr.length >= sizeof(status)) {
+                ipc_recv_payload(tab0->from_worker_pipe[0], &status, sizeof(status));
+            }
+            uint32_t rem = (hdr.length > sizeof(status)) ? (hdr.length - sizeof(status)) : 0;
+            while (rem > 0) {
+                char dummy[256];
+                uint32_t chunk = (rem < sizeof(dummy)) ? rem : (uint32_t)sizeof(dummy);
+                if (!ipc_recv_payload(tab0->from_worker_pipe[0], dummy, chunk)) break;
+                rem -= chunk;
+            }
             break;
         } else {
-            if (hdr.length > 0) {
+            uint32_t rem = hdr.length;
+            while (rem > 0) {
                 char dummy[256];
-                ipc_recv_payload(tab0->from_worker_pipe[0], dummy, hdr.length);
+                uint32_t chunk = (rem < sizeof(dummy)) ? rem : (uint32_t)sizeof(dummy);
+                if (!ipc_recv_payload(tab0->from_worker_pipe[0], dummy, chunk)) break;
+                rem -= chunk;
             }
         }
     }

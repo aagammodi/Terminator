@@ -27,7 +27,7 @@ TEST_TASKS67_BIN := tests/test_tasks6_and_7
 TEST_TASKS89_BIN := tests/test_tasks8_and_9
 TEST_TASKS1011_BIN := tests/test_tasks10_and_11
 
-.PHONY: all clean test
+.PHONY: all clean test test-compat
 
 all: $(BIN)
 
@@ -69,7 +69,11 @@ test: $(BIN) $(TEST_TABS_BIN) $(TEST_MODES_BIN) $(TEST_TASKS67_BIN) $(TEST_TASKS
 	@bash tests/test_pipelines.sh
 	@bash tests/test_multiline.sh
 	@python3 tests/test_ui_and_lifecycle.py
+	@python3 tests/command_compatibility/run_all_audit.py
 	@echo "All automated tests completed successfully!"
+
+test-compat: $(BIN)
+	@python3 tests/command_compatibility/run_all_audit.py
 
 clean:
 	rm -rf $(OBJ_DIR) $(BIN) $(TEST_TABS_BIN) $(TEST_MODES_BIN) $(TEST_TASKS67_BIN) $(TEST_TASKS89_BIN) $(TEST_TASKS1011_BIN) *.o *.d tests/*.d

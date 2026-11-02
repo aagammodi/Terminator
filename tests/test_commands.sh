@@ -82,6 +82,52 @@ assert_session "source executes commands and modifies shell cwd" "source $TMP_SC
 assert_session "source prints command output" "source $TMP_SCRIPT\nexit" "sourced_script_executed_successfully"
 rm -f "$TMP_SCRIPT"
 
+# Test Issue 2: Builtin exit status propagation in script
+TMP_STATUS_SCRIPT=$(mktemp /tmp/terminator_test_status_XXXXXX.sh)
+cat << 'EOF' > "$TMP_STATUS_SCRIPT"
+cd /nonexistent_directory_for_test_12345
+if [ $? -eq 0 ]; then
+    echo "STATUS_BUG"
+else
+    echo "STATUS_CORRECT"
+fi
+EOF
+assert_output "Script builtin exit status propagation (Thread mode)" "bash $TMP_STATUS_SCRIPT" "STATUS_CORRECT"
+out=$($TERMINATOR useProcess=True -c "bash $TMP_STATUS_SCRIPT" 2>&1 || true)
+if echo "$out" | grep -qF "STATUS_CORRECT"; then
+    echo "  [PASS] Script builtin exit status propagation (Process mode)"
+    PASS=$((PASS + 1))
+else
+    echo "  [FAIL] Script builtin exit status propagation (Process mode)"
+    FAIL=$((FAIL + 1))
+fi
+
+# Test Issue 3: No duplicate output in headless script execution
+TMP_DUP_SCRIPT=$(mktemp /tmp/terminator_test_dup_XXXXXX.sh)
+cat << 'EOF' > "$TMP_DUP_SCRIPT"
+echo "single_output_token_xyz"
+EOF
+out=$($TERMINATOR -c "bash $TMP_DUP_SCRIPT" 2>&1 || true)
+count=$(echo "$out" | grep -c "single_output_token_xyz" || true)
+if [ "$count" -eq 1 ]; then
+    echo "  [PASS] Script headless execution produces output exactly once (Thread mode)"
+    PASS=$((PASS + 1))
+else
+    echo "  [FAIL] Script headless execution produces output exactly once (Thread mode, count: $count)"
+    FAIL=$((FAIL + 1))
+fi
+
+out=$($TERMINATOR useProcess=True -c "bash $TMP_DUP_SCRIPT" 2>&1 || true)
+count=$(echo "$out" | grep -c "single_output_token_xyz" || true)
+if [ "$count" -eq 1 ]; then
+    echo "  [PASS] Script headless execution produces output exactly once (Process mode)"
+    PASS=$((PASS + 1))
+else
+    echo "  [FAIL] Script headless execution produces output exactly once (Process mode, count: $count)"
+    FAIL=$((FAIL + 1))
+fi
+rm -f "$TMP_STATUS_SCRIPT" "$TMP_DUP_SCRIPT"
+
 echo "=== Task 2 Result: $PASS Passed, $FAIL Failed ==="
 if [ $FAIL -ne 0 ]; then
     exit 1

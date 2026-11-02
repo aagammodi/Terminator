@@ -216,8 +216,13 @@ int pipeline_execute(Pipeline *pipeline, Tab *tab) {
 
             execvp(cmd->argv[0], cmd->argv);
 
-            fprintf(stderr, "terminator: %s: command not found\n", cmd->argv[0]);
-            _exit(127);
+            if (errno == ENOENT) {
+                fprintf(stderr, "terminator: %s: command not found\n", cmd->argv[0]);
+                _exit(127);
+            } else {
+                fprintf(stderr, "terminator: %s: %s\n", cmd->argv[0], strerror(errno));
+                _exit(126);
+            }
         }
 
         /* Parent process: track child PID and set process group */

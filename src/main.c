@@ -70,7 +70,7 @@ static int run_headless_shell(Shell *shell) {
     signal(SIGINT, headless_sigint_handler);
     signal(SIGTSTP, headless_sigtstp_handler);
 
-    tab->echo_to_stdout = true;
+    tab->echo_to_stdout = (tab->to_worker_pipe[1] < 0);
     bool interactive = isatty(STDIN_FILENO);
 
     char line[MAX_INPUT_LEN];
@@ -178,7 +178,7 @@ static int run_headless_shell(Shell *shell) {
             if (!shell->running) break;
             tab = shell_get_active_tab(shell);
             if (!tab) break;
-            tab->echo_to_stdout = true;
+            tab->echo_to_stdout = (tab->to_worker_pipe[1] < 0);
         }
     }
 
@@ -223,7 +223,7 @@ int main(int argc, char **argv) {
 
     /* If -c was provided, run command and exit */
     if (eval_cmd) {
-        tab->echo_to_stdout = true;
+        tab->echo_to_stdout = (tab->to_worker_pipe[1] < 0);
         if (tab->to_worker_pipe[1] >= 0) {
             ipc_send_msg(tab->to_worker_pipe[1], IPC_MSG_EXEC, eval_cmd, (uint32_t)strlen(eval_cmd));
             IPCHeader hdr;

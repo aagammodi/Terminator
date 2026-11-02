@@ -506,6 +506,28 @@ static void test_part_c_script(void) {
                 "Source mode persists variables directly into Tab environment");
 
     unlink(source_script);
+
+    /* Test Builtin Exit Status & Branching in Scripts (Issue 2) */
+    const char *status_script = "/tmp/term_test_status.sh";
+    const char *status_out = "/tmp/term_status_out.txt";
+    unlink(status_out);
+    const char *status_content =
+        "cd /nonexistent_dir_for_test\n"
+        "if [ $? -eq 0 ]; then\n"
+        "    echo \"BUG\" > /tmp/term_status_out.txt\n"
+        "else\n"
+        "    echo \"CORRECT\" > /tmp/term_status_out.txt\n"
+        "fi\n";
+    write_test_file(status_script, status_content, 0755);
+
+    exec_rc = script_execute_file(tab, status_script, 0, NULL, false, -1, -1);
+    out_txt = read_test_file(status_out);
+    TEST_ASSERT(out_txt != NULL && strstr(out_txt, "CORRECT") != NULL,
+                "Failed builtin updates $? and allows script conditional to branch to else");
+    free(out_txt);
+    unlink(status_script);
+    unlink(status_out);
+
     terminal_tab_destroy(tab);
 }
 

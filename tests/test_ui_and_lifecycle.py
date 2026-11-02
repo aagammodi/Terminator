@@ -220,11 +220,11 @@ def run_interactive_session(extra_args=None, mode_name="Thread Mode"):
 
     send_cmd(f"bash {script_tmp}")
     res_scr = read_until("@terminator> ", timeout=2.5)
-    check("Task 11: 'bash script.sh' executes internal interpreter", "status: pty_script_ok" in res_scr, f"Output was: {repr(res_scr)}")
+    check("Task 11: 'bash script.sh' executes internal interpreter", "status: pty_script_ok" in res_scr and res_scr.count("status: pty_script_ok") == 1, f"Output was: {repr(res_scr)}")
 
     send_cmd(f"source {script_tmp}")
     res_src = read_until("@terminator> ", timeout=2.5)
-    check("Task 11: 'source script.sh' executes internal interpreter", "status: pty_script_ok" in res_src, f"Output was: {repr(res_src)}")
+    check("Task 11: 'source script.sh' executes internal interpreter", "status: pty_script_ok" in res_src and res_src.count("status: pty_script_ok") == 1, f"Output was: {repr(res_src)}")
     if os.path.exists(script_tmp):
         os.remove(script_tmp)
 

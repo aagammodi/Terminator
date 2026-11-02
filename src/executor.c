@@ -118,6 +118,19 @@ static bool command_needs_pause_on_exit(const Command *cmd) {
     return false;
 }
 
+static bool has_help_or_version_flag(const Command *cmd, int start_idx) {
+    if (!cmd) return false;
+    for (int i = start_idx; i < cmd->argc; i++) {
+        if (strcmp(cmd->argv[i], "--help") == 0 ||
+            strcmp(cmd->argv[i], "-h") == 0 ||
+            strcmp(cmd->argv[i], "--version") == 0 ||
+            strcmp(cmd->argv[i], "-V") == 0) {
+            return true;
+        }
+    }
+    return false;
+}
+
 static bool is_tui_command(const Command *cmd) {
     if (!cmd || cmd->argc == 0 || !cmd->argv || !cmd->argv[0]) return false;
     const char *base = strrchr(cmd->argv[0], '/');
@@ -140,6 +153,11 @@ static bool is_tui_command(const Command *cmd) {
         }
         base = strrchr(cmd->argv[target_idx], '/');
         base = base ? base + 1 : cmd->argv[target_idx];
+    }
+
+    /* Help and version queries are non-interactive stdout printers (except forbidden nano) */
+    if (strcmp(base, "nano") != 0 && has_help_or_version_flag(cmd, target_idx + 1)) {
+        return false;
     }
 
     if (strcmp(base, "su") == 0) {
@@ -343,7 +361,7 @@ int executor_run_line(Tab *tab, const char *cmd_line) {
             if (redirection_apply_in_parent(cmd, &saved_stdin, &saved_stdout) < 0) {
                 tab->last_exit_status = 1;
                 pipeline_free(pipeline);
-                return -1;
+                return 1;
             }
         } else {
             /* Capture stdout/stderr via pipe to display in terminal tab */
@@ -391,7 +409,7 @@ int executor_run_line(Tab *tab, const char *cmd_line) {
         }
 
         pipeline_free(pipeline);
-        return 0;
+        return tab->last_exit_status;
     }
 
 execute_external_pipeline:;
@@ -421,6 +439,9 @@ sync_monitor_job:
         close(tab->out_pipe_fd);
         tab->out_pipe_fd = -1;
         executor_reap_children(tab);
+    }
+    if (ret == 0) {
+        ret = tab->last_exit_status;
     }
     return ret;
 }
@@ -596,7 +617,7 @@ int executor_run_line_worker(Tab *tab, const char *cmd_line, int read_ipc_fd, in
         ipc_send_msg(write_ipc_fd, IPC_MSG_PROMPT, &status, sizeof(status));
 
         pipeline_free(pipeline);
-        return 0;
+        return status;
     }
 
 execute_external_worker_pipeline:;

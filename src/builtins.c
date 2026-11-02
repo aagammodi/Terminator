@@ -27,7 +27,8 @@ bool builtin_is_builtin(const char *name) {
             strcmp(name, "fg") == 0 ||
             strcmp(name, "bg") == 0 ||
             strcmp(name, "source") == 0 ||
-            strcmp(name, ".") == 0);
+            strcmp(name, ".") == 0 ||
+            strcmp(name, "umask") == 0);
 }
 
 static int builtin_cd(const Command *cmd, Tab *tab) {
@@ -288,6 +289,58 @@ static int builtin_bind(const Command *cmd, Tab *tab) {
     return 1;
 }
 
+static int builtin_umask(const Command *cmd, Tab *tab) {
+    (void)tab;
+    if (cmd->argc <= 1) {
+        mode_t cur = umask(0);
+        umask(cur);
+        printf("%04o\n", (unsigned int)cur);
+        fflush(stdout);
+        return 0;
+    }
+
+    if (strcmp(cmd->argv[1], "-S") == 0) {
+        mode_t cur = umask(0);
+        umask(cur);
+        mode_t perms = (~cur) & 0777;
+        char u[4] = "", g[4] = "", o[4] = "";
+        int ui = 0, gi = 0, oi = 0;
+        if (perms & 0400) u[ui++] = 'r';
+        if (perms & 0200) u[ui++] = 'w';
+        if (perms & 0100) u[ui++] = 'x';
+        u[ui] = '\0';
+        if (perms & 0040) g[gi++] = 'r';
+        if (perms & 0020) g[gi++] = 'w';
+        if (perms & 0010) g[gi++] = 'x';
+        g[gi] = '\0';
+        if (perms & 0004) o[oi++] = 'r';
+        if (perms & 0002) o[oi++] = 'w';
+        if (perms & 0001) o[oi++] = 'x';
+        o[oi] = '\0';
+        printf("u=%s,g=%s,o=%s\n", u, g, o);
+        fflush(stdout);
+        return 0;
+    }
+
+    if (strcmp(cmd->argv[1], "-p") == 0) {
+        mode_t cur = umask(0);
+        umask(cur);
+        printf("umask %04o\n", (unsigned int)cur);
+        fflush(stdout);
+        return 0;
+    }
+
+    char *endptr = NULL;
+    long val = strtol(cmd->argv[1], &endptr, 8);
+    if (!endptr || *endptr != '\0' || val < 0 || val > 0777) {
+        fprintf(stderr, "terminator: umask: `%s': invalid octal number\n", cmd->argv[1]);
+        return 1;
+    }
+
+    umask((mode_t)val);
+    return 0;
+}
+
 int builtin_execute(const Command *cmd, Tab *tab) {
     if (!cmd || cmd->argc == 0 || !cmd->argv[0]) return 0;
 
@@ -315,6 +368,8 @@ int builtin_execute(const Command *cmd, Tab *tab) {
         return builtin_multiwatch(cmd, tab);
     } else if (strcmp(name, "bind") == 0) {
         return builtin_bind(cmd, tab);
+    } else if (strcmp(name, "umask") == 0) {
+        return builtin_umask(cmd, tab);
     }
 
     return 127;

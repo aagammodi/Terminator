@@ -929,10 +929,17 @@ int script_execute_file(Tab *tab, const char *filepath, int argc, char **argv,
     g_active_script_ctx = &ctx;
     g_active_expansion_tab = tab;
 
+    bool saved_echo = tab->echo_to_stdout;
+    if (write_ipc_fd >= 0) {
+        tab->echo_to_stdout = false;
+    }
+
     bool should_exit = false;
     int exit_code = 0;
 
     execute_stmt_list(tab, stmts, stmt_count, &ctx, is_source, read_ipc_fd, write_ipc_fd, &should_exit, &exit_code);
+
+    tab->echo_to_stdout = saved_echo;
 
     g_active_script_ctx = prev_ctx;
     g_active_expansion_tab = prev_tab;

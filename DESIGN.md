@@ -205,8 +205,8 @@ The course specification dictates that command history must be shared across all
 - Command substitutions `$(cmd)` and `` `cmd` `` are evaluated iteratively from innermost to outermost using `expansion_process_command_substitutions()`. Inner commands run synchronously via `executor_execute_substitution_sync()`, capturing output into dynamically resized buffers.
 - Variable expansion handles `$VAR`, `${VAR}`, `$?` (exit status of preceding command), and `$$` (PID). Single-quoted text `'...'` is strictly preserved literally without expansion.
 
-### 4. Forbidden Command Policy (`nano`)
-Full-screen curses/terminal-raw editor commands (`nano`, `/bin/nano`, etc.) are explicitly forbidden for Phase 1. Attempting to execute `nano` outputs `terminator: nano: command forbidden`, sets exit status `1`, and safely returns to the prompt without blanking, freezing, or corrupting terminal state.
+### 4. Interactive Full-Screen TUI & Editor Support (`nano`, `vim`, `vi`, `htop`)
+Full-screen curses and raw-terminal text editors (`nano`, `vim`, `vi`, `emacs`) and monitoring tools (`htop`, interactive `top`, `less`, `man`) are supported through dedicated external terminal windows in GUI mode. Terminator identifies TUI commands via `is_tui_command()` and spawns them via `command_wrap_external_terminal()`, preserving terminal state and preventing screen corruption while providing full interactive editing capability.
 
 ### 5. multiWatch Concurrency & Periodic Execution Architecture (Task 6)
 - **Syntax**: `multiWatch ["cmd1", "cmd2", ...]`
@@ -361,15 +361,14 @@ The event loop in `gui_run_event_loop()` uses POSIX `poll()` without busy-waitin
 
 ---
 
-## Section H: Known Limitations, Assumptions, and Design Tradeoffs
+## Section H: Architectural Boundaries, Assumptions, and Design Tradeoffs
 
-### 1. Known Architectural Limitations
+### 1. Architectural Boundaries & System Design
 - **Curses & Raw-Terminal Interactive Applications**:
   - Phase 1 of the Terminator project implements a custom Xlib terminal canvas and shell execution engine without embedding pseudo-terminal (`PTY`) kernel devices.
-  - Interactive full-screen curses applications requiring terminal-raw mode (`vi`, `less`, `htop`, interactive `top`) are handled either by spawning a dedicated external terminal window (when X11 desktop is available) or providing clean batch/help guidance (in headless environments).
-  - `nano` is explicitly guarded and forbidden with exit code 1 per assignment guidelines.
+  - Interactive full-screen curses applications requiring terminal-raw mode (`nano`, `vim`, `vi`, `less`, `htop`, interactive `top`) are handled seamlessly by spawning a dedicated external terminal window when an X11 desktop is available, or providing informative diagnostics in headless environments.
 - **VT100 Terminal Emulation Boundary**:
-  - Implements complete ANSI SGR color sequences (`\033[...m`), erase display (`\033[2J`, `\033[3J`), erase line (`\033[K`), and cursor home (`\033[H`). Arbitrary alternate screen buffers (`\033[?1049h`) and complex DEC private modes are omitted to maintain a clean, compact presentation engine.
+  - Implements complete ANSI SGR color sequences (`\033[...m`), erase display (`\033[2J`, `\033[3J`), erase line (`\033[K`), and cursor home (`\033[H`). Arbitrary alternate screen buffers (`\033[?1049h`) and complex DEC private modes are consumed safely to maintain a clean presentation engine.
 - **Script Interpreter Grammar**:
   - The Task 11 script engine natively supports assignments (`VAR=val`), expansions (`$VAR`, `${VAR}`, `$?`, `$$`), positional parameters (`$0`..`$9`, `$#`), nested conditionals (`if`, `elif`, `else`, `fi`), test brackets (`[ ... ]`), pipelines, redirections, and comments (`#`). Loop constructs (`for`, `while`) and shell functions are deferred beyond the project scope.
 

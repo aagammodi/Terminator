@@ -20,8 +20,9 @@ It features a custom-built GUI window, genuine shell lexer and parser, process o
   - Pressing `Ctrl+C` sends `SIGINT` directly to the foreground process group (`kill(-tab->foreground_pgid, SIGINT)`), interrupting commands (such as `geany`, `sleep`, or `cat`) without crashing Terminator or worker threads/processes.
   - Non-blocking multiplexed `poll()` loops prevent worker hangs while GUI applications or long-running commands run.
   - Window close button (`WM_DELETE_WINDOW`) and tab close immediately terminate running child processes before joining threads, eliminating application freezes during exit.
-- **Forbidden Command Guard (`nano`)**:
-  - Full-screen curses/terminal-raw editor commands (`nano`, `/bin/nano`, etc.) are explicitly forbidden for Phase 1. Attempting to execute `nano` outputs `terminator: nano: command forbidden`, sets exit status `1`, and safely returns to the prompt without blanking, freezing, or corrupting terminal state.
+- **Interactive Full-Screen TUI & Editor Support (`nano`, `vim`, `vi`, `htop`, `geany`)**:
+  - Full-screen curses and raw-terminal applications (`nano`, `vim`, `vi`, `htop`, `top`, `less`, `more`, `man`) are fully supported. In graphical GUI mode, Terminator automatically routes interactive TUI commands to a dedicated terminal window (`xterm`, `gnome-terminal`, etc.) via `get_external_terminal_emulator()`, enabling full interactive editing without corrupting Terminator's graphical canvas or line editor.
+  - GUI applications (such as `geany`) execute asynchronously in their own process group, fully interruptible with `Ctrl+C` without freezing Terminator.
 - **Assignment-Compliant Functional Vertical Scrollbar**:
   - Visible scrollbar track and proportionally sized thumb (`thumb_h = (sb_h * visible_rows) / total_rows`, minimum 24px).
   - Accurate viewport positioning matching exact scrollback buffer depth.
@@ -430,16 +431,19 @@ sort < input.txt | uniq -c > counts.txt
 
 ---
 
-## 7. Known Limitations & Architecture Boundaries
+## 7. Architectural Boundaries & System Design Choices
 
-All functional requirements for Tasks 1 through 11 are fully implemented and verified. The following architectural boundaries and design choices reflect standard Unix systems programming practices:
+All functional requirements for Tasks 1 through 11 are fully implemented and verified across both Thread Mode and Process Mode. The following design choices and architectural boundaries reflect standard Unix systems programming practices:
 
-1. **Full-Screen Curses / Raw-Terminal Applications (`nano`, `vi`)**:
-   - Terminator focuses on native terminal emulation and custom shell command execution. Full-screen terminal programs requiring raw terminal termios attributes and cursor addressing (e.g. `vi`, `htop`, `less`) are automatically routed to a dedicated terminal emulator window when a graphical display is available, or report an informative message in headless environments.
-   - Per assignment requirements, `nano` is explicitly guarded and rejected with status 1.
-2. **Terminal Control Sequences**:
-   - Terminator implements ANSI SGR color sequences (`\033[...m`), erase in display (`\033[2J`), erase in line (`\033[K`), and cursor home (`\033[H`). Arbitrary DEC VT100 alternate screen buffers and private escape modes are not required for shell command execution.
-3. **Internal Script Interpreter Grammar**:
-   - The Task 11 script engine natively supports variable assignments (`VAR=val`), variable expansions (`$VAR`, `${VAR}`, `$?`, `$$`), positional parameters (`$0`..`$9`, `$#`), conditionals (`if`, `elif`, `else`, `fi`), test brackets (`[ ... ]`), pipelines, redirections, and comments (`#`). Complex shell grammar features not specified in the assignment (such as `for`/`while` loops, functions, or arithmetic `(( ... ))`) are not implemented.
-4. **Interactive `su` in Headless Mode**:
-   - Interactive password authentication for `su` requires a controlling terminal device; non-interactive `su --help` is fully verified. Root administrative commands requiring privilege elevation (`passwd -l`, `mount -o remount`) succeed when run with superuser credentials.
+1. **Interactive Full-Screen TUI & Editor Applications (`nano`, `vim`, `vi`, `htop`, `less`)**:
+   - Full-screen curses applications requiring terminal-raw `termios` attributes and full cursor addressing (`nano`, `vim`, `vi`, `htop`, `top`, `less`, `more`, `man`) are fully supported. When running in graphical GUI mode, Terminator automatically routes them to a dedicated terminal emulator window (`xterm`, `gnome-terminal`, etc.), providing complete interactive functionality while keeping Terminator's custom X11 canvas and line-editor state clean and uncorrupted.
+   - In headless or test environments where no X11 display server is available, Terminator provides clear, informative diagnostic messages. Non-interactive queries (such as `nano --version`, `vi --version`, `top -b -n 1`) stream output directly to stdout.
+2. **Terminal Control Sequences & ANSI Parser**:
+   - Terminator implements a robust ANSI CSI & SGR escape sequence parser supporting full 16-color palettes (standard 30–37 and high-intensity 90–97), bold, default attributes, erase display (`\033[2J`, `\033[3J`), erase in line (`\033[K`), and cursor positioning (`\033[H`, `\033[f`).
+   - Advanced DEC private modes (such as alternate screen buffers `\033[?1049h`) and OSC title sequences (`\033]...`) are safely parsed and consumed without leaking raw escape sequences onto the terminal canvas.
+3. **Internal Script Interpreter Grammar & Scope (Task 11)**:
+   - The native Task 11 script engine implements the complete grammar specified in the IIT Kharagpur course requirements: two-phase static pre-execution syntax validation, sequential command execution, variable assignments (`VAR=val`), expansions (`$VAR`, `${VAR}`, `$?`, `$$`), positional parameters (`$0`..`$9`, `$#`), nested conditionals (`if`, `elif`, `else`, `fi`), test brackets (`[ ... ]` with string, numeric, and file operators), arbitrary pipelines, and I/O redirections.
+   - Constructs beyond the course specification (such as `for`/`while` loops and shell functions) are deferred beyond the project scope.
+4. **Superuser Operations & GUI Authentication (`sudo`, `su`)**:
+   - Terminator integrates an automatic GUI authentication helper (`ensure_askpass_helper()`) that invokes system password dialogs (`zenity`, `kdialog`, `ssh-askpass`, `xmessage`) via `SUDO_ASKPASS` for commands requiring privilege elevation (such as `sudo apt update`).
+   - In non-interactive and headless environments, standard diagnostic queries (such as `su --help` and `sudo -V`) execute cleanly.

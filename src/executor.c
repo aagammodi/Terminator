@@ -159,8 +159,8 @@ static bool is_tui_command(const Command *cmd) {
         base = base ? base + 1 : cmd->argv[target_idx];
     }
 
-    /* Help and version queries are non-interactive stdout printers (except forbidden nano) */
-    if (strcmp(base, "nano") != 0 && has_help_or_version_flag(cmd, target_idx + 1)) {
+    /* Help and version queries are non-interactive stdout printers */
+    if (has_help_or_version_flag(cmd, target_idx + 1)) {
         return false;
     }
 

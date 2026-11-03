@@ -1,5 +1,9 @@
 #include "ipc.h"
 
+/*
+ * Reliably write exactly 'count' bytes to pipe/socket descriptor.
+ * Retries on EINTR/EAGAIN to prevent partial IPC packet corruption.
+ */
 static bool write_all(int fd, const void *buf, size_t count) {
     if (fd < 0 || !buf) return false;
     const char *p = (const char *)buf;
@@ -15,6 +19,10 @@ static bool write_all(int fd, const void *buf, size_t count) {
     return true;
 }
 
+/*
+ * Reliably read exactly 'count' bytes from pipe descriptor.
+ * Loops until full length-prefixed payload or header is received.
+ */
 static bool read_all(int fd, void *buf, size_t count) {
     if (fd < 0 || !buf) return false;
     char *p = (char *)buf;
@@ -30,6 +38,10 @@ static bool read_all(int fd, void *buf, size_t count) {
     return true;
 }
 
+/*
+ * Frame and transmit an IPC message (header + optional variable-length payload).
+ * Used for GUI <-> worker tab communication across both Thread and Process modes.
+ */
 bool ipc_send_msg(int fd, IPCMsgType type, const void *payload, uint32_t len) {
     if (fd < 0) return false;
     IPCHeader hdr;
@@ -47,11 +59,17 @@ bool ipc_send_msg(int fd, IPCMsgType type, const void *payload, uint32_t len) {
     return true;
 }
 
+/*
+ * Receive fixed-size 8-byte message header specifying message type and payload length.
+ */
 bool ipc_recv_header(int fd, IPCHeader *hdr) {
     if (fd < 0 || !hdr) return false;
     return read_all(fd, hdr, sizeof(IPCHeader));
 }
 
+/*
+ * Read exact payload bytes specified in previously parsed header.
+ */
 bool ipc_recv_payload(int fd, void *buf, uint32_t len) {
     if (fd < 0 || !buf || len == 0) return false;
     return read_all(fd, buf, (size_t)len);

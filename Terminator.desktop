@@ -1,0 +1,13 @@
+[Desktop Entry]
+Version=1.0
+Type=Application
+Name=Terminator
+GenericName=Terminal Emulator
+Comment=Custom Terminal Emulator and Shell
+Exec=/home/aagam/Downloads/26CS60R61_Terminator/terminator
+Path=/home/aagam/Downloads/26CS60R61_Terminator
+Icon=utilities-terminal
+Terminal=false
+Categories=System;TerminalEmulator;Utility;
+StartupNotify=true
+Keywords=shell;prompt;command;commandline;cmd;terminator;

@@ -27,6 +27,10 @@ static ThemeColorIndex ansi_to_theme_color(int code, bool bright) {
     }
 }
 
+/*
+ * Allocate and initialize per-tab terminal data structure.
+ * Sets up line ring buffers, cursor positions, per-tab variable scope, and job table.
+ */
 Tab *terminal_tab_create(int id, const char *initial_dir, Shell *shell) {
     Tab *tab = xcalloc(1, sizeof(Tab));
     tab->id = id;
@@ -56,6 +60,7 @@ Tab *terminal_tab_create(int id, const char *initial_dir, Shell *shell) {
     tab->current_fg_color = COLOR_FG_MAIN;
 
     tab->scroll_offset = 0;
+    tab->max_cols = 0;
 
     tab->out_pipe_fd = -1;
     tab->running_pid = -1;
@@ -324,9 +329,11 @@ void terminal_history_next(Tab *tab) {
     }
 }
 
-void terminal_append_line_with_colors(Tab *tab, const char *text, const uint8_t *colors, int len, LineType type) {
-    if (!tab) return;
-
+/*
+ * Append a single physical line to the scrollback ring buffer.
+ * Enforces MAX_SCROLLBACK_LINES FIFO eviction, dynamically expands capacity, and updates scroll offset.
+ */
+static void append_single_line(Tab *tab, const char *text, const uint8_t *colors, int len, LineType type) {
     if (tab->num_lines >= MAX_SCROLLBACK_LINES) {
         free(tab->lines[0].text);
         free(tab->lines[0].colors);
@@ -355,6 +362,81 @@ void terminal_append_line_with_colors(Tab *tab, const char *text, const uint8_t 
     }
 }
 
+/*
+ * Word-wrap incoming text according to window column capacity (max_cols).
+ * Scans backwards for whitespace boundaries to avoid splitting words across lines,
+ * hard-wraps unbroken tokens exceeding max_cols, and preserves per-character ANSI color attributes.
+ */
+void terminal_append_line_with_colors(Tab *tab, const char *text, const uint8_t *colors, int len, LineType type) {
+    if (!tab) return;
+    if (!text) text = "";
+    if (len <= 0) len = (int)strlen(text);
+
+    int max_cols = tab->max_cols;
+
+    /* If line fits within column width or column wrapping is disabled, append directly */
+    if (max_cols <= 0 || len <= max_cols) {
+        append_single_line(tab, text, colors, len, type);
+        return;
+    }
+
+    /* Word wrap lines exceeding max_cols */
+    int offset = 0;
+    while (offset < len) {
+        int rem = len - offset;
+        if (rem <= max_cols) {
+            char chunk[MAX_INPUT_LEN];
+            if (rem >= (int)sizeof(chunk)) rem = (int)sizeof(chunk) - 1;
+            memcpy(chunk, text + offset, (size_t)rem);
+            chunk[rem] = '\0';
+            const uint8_t *col_slice = colors ? (colors + offset) : NULL;
+            append_single_line(tab, chunk, col_slice, rem, type);
+            break;
+        }
+
+        /* Look for word break (space or tab) within max_cols window */
+        int break_pos = -1;
+        for (int i = offset + max_cols; i > offset; i--) {
+            if (text[i] == ' ' || text[i] == '\t') {
+                break_pos = i;
+                break;
+            }
+        }
+
+        int chunk_len;
+        int next_offset;
+
+        if (break_pos > offset) {
+            /* Break at word boundary */
+            chunk_len = break_pos - offset;
+            int trimmed = chunk_len;
+            while (trimmed > 0 && (text[offset + trimmed - 1] == ' ' || text[offset + trimmed - 1] == '\t')) {
+                trimmed--;
+            }
+            if (trimmed > 0) {
+                chunk_len = trimmed;
+            }
+            next_offset = break_pos + 1;
+            while (next_offset < len && (text[next_offset] == ' ' || text[next_offset] == '\t')) {
+                next_offset++;
+            }
+        } else {
+            /* No space found in window: hard wrap at max_cols */
+            chunk_len = max_cols;
+            next_offset = offset + max_cols;
+        }
+
+        char chunk[MAX_INPUT_LEN];
+        if (chunk_len >= (int)sizeof(chunk)) chunk_len = (int)sizeof(chunk) - 1;
+        memcpy(chunk, text + offset, (size_t)chunk_len);
+        chunk[chunk_len] = '\0';
+        const uint8_t *col_slice = colors ? (colors + offset) : NULL;
+        append_single_line(tab, chunk, col_slice, chunk_len, type);
+
+        offset = next_offset;
+    }
+}
+
 void terminal_append_line(Tab *tab, const char *text, LineType type) {
     terminal_append_line_with_colors(tab, text, NULL, 0, type);
 }
@@ -368,6 +450,10 @@ static inline void safe_write_bytes(int fd, const char *buf, size_t len) {
     }
 }
 
+/*
+ * Process incoming stream bytes from child pipes: parses ANSI escape sequences (CSI, SGR colors),
+ * handles newlines and line wrapping, and populates the terminal line ring buffer.
+ */
 void terminal_append_output_bytes(Tab *tab, const char *bytes, size_t len, bool is_error) {
     if (!tab || !bytes || len == 0) return;
 

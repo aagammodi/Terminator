@@ -7,12 +7,19 @@
 #include <errno.h>
 #include <string.h>
 
+/*
+ * Initialize the per-tab job control table.
+ * Manages background (&) and suspended (Ctrl+Z) process groups.
+ */
 void jobs_init(JobTable *table) {
     if (!table) return;
     memset(table, 0, sizeof(JobTable));
     table->next_id = 1;
 }
 
+/*
+ * Clean up active job table entries and release any open capture pipe descriptors.
+ */
 void jobs_cleanup(JobTable *table) {
     if (!table) return;
     for (int i = 0; i < table->count; i++) {
@@ -33,6 +40,10 @@ const char *jobs_state_str(JobState state) {
     }
 }
 
+/*
+ * Register a new job or update an existing job's state by its process group ID (pgid).
+ * Maintains standard '+' (current) and '-' (previous) job indicators.
+ */
 Job *jobs_add(JobTable *table, pid_t pgid, const pid_t *pids, int num_pids,
               const char *cmd_line, JobState state, bool is_foreground, int out_pipe_fd) {
     if (!table || table->count >= MAX_JOBS) return NULL;
@@ -128,6 +139,10 @@ Job *jobs_get_current_stopped(JobTable *table) {
     return NULL;
 }
 
+/*
+ * Asynchronously poll status of all job child processes using waitpid(WNOHANG | WUNTRACED | WCONTINUED).
+ * Detects state changes (stopped, continued, exited) and non-blockingly drains background pipes.
+ */
 void jobs_update_status(JobTable *table, struct Tab *tab) {
     if (!table) return;
 
@@ -219,6 +234,10 @@ void jobs_update_status(JobTable *table, struct Tab *tab) {
     }
 }
 
+/*
+ * Print formatted job list for the 'jobs' builtin command.
+ * Marks current job with '+', previous with '-', and auto-prunes finished jobs.
+ */
 void jobs_list(JobTable *table, FILE *out_fp, struct Tab *tab) {
     if (!table || !out_fp) return;
 

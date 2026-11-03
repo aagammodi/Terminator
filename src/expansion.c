@@ -25,6 +25,10 @@ static const char *resolve_var_value(const char *name, const ScriptVarContext *c
     return ev ? ev : "";
 }
 
+/*
+ * Scan and evaluate command substitutions $(...) and `...` from innermost to outermost.
+ * Runs inner commands in isolated subshells, capturing standard output into dynamic strings.
+ */
 char *expansion_process_command_substitutions(const char *input, int last_exit_status) {
     if (!input) return NULL;
 
@@ -151,6 +155,10 @@ char *expansion_expand_variables(const char *input, int last_exit_status) {
     return expansion_expand_variables_ex(input, last_exit_status, g_active_script_ctx, g_active_expansion_tab);
 }
 
+/*
+ * Expand shell and environment variables ($VAR, ${VAR}, $?, $$) within double quotes and unquoted text.
+ * Strictly preserves single-quoted strings literally per standard POSIX shell specifications.
+ */
 char *expansion_expand_variables_ex(const char *input, int last_exit_status, const ScriptVarContext *ctx, const struct Tab *tab) {
     if (!input) return NULL;
 

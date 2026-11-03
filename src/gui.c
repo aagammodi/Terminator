@@ -71,6 +71,152 @@ static void draw_selection_gradient(GUI *gui, int hx, int hy, int hw, int hh) {
     XDrawRectangle(gui->dpy, gui->back_buffer, gui->gc, hx, hy, (unsigned int)(hw > 1 ? hw - 1 : 1), (unsigned int)(hh > 1 ? hh - 1 : 1));
 }
 
+/*
+ * Calculate visual word-wrapped line chunks and cursor coordinates for the active interactive input.
+ * Dynamically breaks input across multiple rows if it exceeds available column capacity,
+ * maintaining word boundaries and positioning the cursor accurately within wrapped rows.
+ */
+void compute_input_layout(const Tab *tab, int max_cols, InputLayout *layout) {
+    if (!layout) return;
+    memset(layout, 0, sizeof(InputLayout));
+
+    if (!tab) {
+        layout->num_rows = 1;
+        return;
+    }
+
+    const char *text = "";
+    int cur = 0;
+
+    if (tab->in_search_mode) {
+        safe_strncpy(layout->pfx, "Enter search term: ", sizeof(layout->pfx));
+        layout->pfx_len = (int)strlen(layout->pfx);
+        text = tab->search_buf;
+        cur = tab->search_cursor;
+    } else if (tab->state == SHELL_STATE_CONTINUATION) {
+        safe_strncpy(layout->pfx, "> ", sizeof(layout->pfx));
+        layout->pfx_len = (int)strlen(layout->pfx);
+        text = tab->input;
+        cur = tab->cursor;
+    } else {
+        const char *user = getenv("USER");
+        if (!user || user[0] == '\0') user = "user";
+        snprintf(layout->pfx, sizeof(layout->pfx), "%s@terminator> ", user);
+        layout->pfx_len = (int)strlen(layout->pfx);
+        text = tab->input;
+        cur = tab->cursor;
+    }
+
+    int text_len = (int)strlen(text);
+    if (cur < 0) cur = 0;
+    if (cur > text_len) cur = text_len;
+
+    int cols = (max_cols > 20) ? max_cols : 80;
+
+    if (text_len == 0) {
+        layout->num_rows = 1;
+        layout->chunks[0].start = 0;
+        layout->chunks[0].len = 0;
+        layout->cursor_row = 0;
+        layout->cursor_col = layout->pfx_len;
+        return;
+    }
+
+    int offset = 0;
+    int row = 0;
+    layout->cursor_row = -1;
+    layout->cursor_col = -1;
+
+    while (offset < text_len && row < MAX_INPUT_ROWS) {
+        int cap = (row == 0) ? (cols - layout->pfx_len) : cols;
+        if (cap < 10) cap = 10;
+
+        int rem = text_len - offset;
+        if (rem <= cap) {
+            layout->chunks[row].start = offset;
+            layout->chunks[row].len = rem;
+            row++;
+            break;
+        }
+
+        /* Scan backwards from offset + cap for whitespace */
+        int break_pos = -1;
+        for (int i = offset + cap; i > offset; i--) {
+            if (text[i] == ' ' || text[i] == '\t') {
+                break_pos = i;
+                break;
+            }
+        }
+
+        int chunk_len;
+        int next_offset;
+
+        if (break_pos > offset) {
+            chunk_len = break_pos - offset;
+            int trimmed = chunk_len;
+            while (trimmed > 0 && (text[offset + trimmed - 1] == ' ' || text[offset + trimmed - 1] == '\t')) {
+                trimmed--;
+            }
+            if (trimmed > 0) {
+                chunk_len = trimmed;
+            }
+            next_offset = break_pos + 1;
+            while (next_offset < text_len && (text[next_offset] == ' ' || text[next_offset] == '\t')) {
+                next_offset++;
+            }
+        } else {
+            chunk_len = cap;
+            next_offset = offset + cap;
+        }
+
+        layout->chunks[row].start = offset;
+        layout->chunks[row].len = chunk_len;
+        row++;
+
+        offset = next_offset;
+    }
+
+    layout->num_rows = (row > 0) ? row : 1;
+
+    /* Compute cursor row and column */
+    for (int r = 0; r < layout->num_rows; r++) {
+        int st = layout->chunks[r].start;
+        int en = st + layout->chunks[r].len;
+        if (cur >= st && cur <= en) {
+            layout->cursor_row = r;
+            layout->cursor_col = (r == 0 ? layout->pfx_len : 0) + (cur - st);
+            break;
+        }
+        if (r + 1 < layout->num_rows && cur > en && cur < layout->chunks[r + 1].start) {
+            layout->cursor_row = r;
+            layout->cursor_col = (r == 0 ? layout->pfx_len : 0) + layout->chunks[r].len;
+            break;
+        }
+    }
+    if (layout->cursor_row < 0) {
+        int last = layout->num_rows - 1;
+        layout->cursor_row = last;
+        layout->cursor_col = (last == 0 ? layout->pfx_len : 0) + layout->chunks[last].len;
+    }
+}
+
+static int get_row_text_length(const Tab *tab, int r) {
+    if (!tab) return 0;
+    if (r < tab->num_lines) {
+        return (tab->lines[r].length > 0) ? tab->lines[r].length : (int)strlen(tab->lines[r].text ? tab->lines[r].text : "");
+    }
+    if (tab->state != SHELL_STATE_RUNNING) {
+        int sub_row = r - tab->num_lines;
+        InputLayout layout;
+        int cols = tab->max_cols > 0 ? tab->max_cols : 80;
+        compute_input_layout(tab, cols, &layout);
+        if (sub_row >= 0 && sub_row < layout.num_rows) {
+            return (sub_row == 0 ? layout.pfx_len : 0) + layout.chunks[sub_row].len;
+        }
+    }
+    return 0;
+}
+
 static bool get_row_selection_range(const GUI *gui, const Tab *tab, int r, int *out_c1, int *out_c2) {
     bool active = tab ? tab->sel_active : gui->sel_active;
     if (!active) return false;
@@ -87,18 +233,20 @@ static bool get_row_selection_range(const GUI *gui, const Tab *tab, int r, int *
 
     if (r < r1 || r > r2) return false;
 
+    int row_len = get_row_text_length(tab, r);
+
     if (r1 == r2) {
         *out_c1 = c1;
-        *out_c2 = c2;
+        *out_c2 = (c2 < row_len) ? c2 : row_len;
     } else if (r == r1) {
-        *out_c1 = c1;
-        *out_c2 = 120;
+        *out_c1 = (c1 < row_len) ? c1 : row_len;
+        *out_c2 = row_len;
     } else if (r == r2) {
         *out_c1 = 0;
-        *out_c2 = c2;
+        *out_c2 = (c2 < row_len) ? c2 : row_len;
     } else {
         *out_c1 = 0;
-        *out_c2 = 120;
+        *out_c2 = row_len;
     }
 
     return (*out_c2 > *out_c1);
@@ -135,6 +283,11 @@ static void draw_text_selected(GUI *gui, int start_col, int render_y, const char
     }
 }
 
+/*
+ * Calculate scrollbar track and proportional thumb geometry based on terminal buffer dimensions.
+ * Computes visible line capacity, total rows, thumb height proportional to viewport ratio,
+ * and vertical thumb position matching scroll offset.
+ */
 bool gui_get_scrollbar_geom(const GUI *gui, const Tab *tab, ScrollbarGeom *geom) {
     if (!gui || !tab || !geom) return false;
 
@@ -153,7 +306,10 @@ bool gui_get_scrollbar_geom(const GUI *gui, const Tab *tab, ScrollbarGeom *geom)
 
     int total_rows = tab->num_lines;
     if (tab->state != SHELL_STATE_RUNNING) {
-        total_rows++;
+        InputLayout layout;
+        int cols = (gui->width - gui->theme.padding_x - 16) / (gui->theme.font_width > 0 ? gui->theme.font_width : 8);
+        compute_input_layout(tab, cols, &layout);
+        total_rows += layout.num_rows;
     }
 
     int max_scroll = (total_rows > visible_rows) ? (total_rows - visible_rows) : 0;
@@ -277,6 +433,14 @@ GUI *gui_create(Shell *shell, int width, int height) {
     XMapWindow(dpy, gui->win);
     XFlush(dpy);
 
+    int term_cols = (gui->width - gui->theme.padding_x - 16) / (gui->theme.font_width > 0 ? gui->theme.font_width : 8);
+    if (term_cols < 20) term_cols = 20;
+    for (int i = 0; i < shell->num_tabs; i++) {
+        if (shell->tabs[i]) {
+            shell->tabs[i]->max_cols = term_cols;
+        }
+    }
+
     return gui;
 }
 
@@ -326,11 +490,24 @@ char *gui_get_selected_text(const GUI *gui, const Tab *tab) {
 
         if (r < tab->num_lines) {
             line_text = tab->lines[r].text ? tab->lines[r].text : "";
-        } else if (r == tab->num_lines && tab->state != SHELL_STATE_RUNNING) {
-            char prompt_buf[MAX_INPUT_LEN];
-            shell_format_prompt((Tab *)tab, prompt_buf, sizeof(prompt_buf));
-            snprintf(input_line_buf, sizeof(input_line_buf), "%s%s", prompt_buf, tab->input);
-            line_text = input_line_buf;
+        } else if (tab->state != SHELL_STATE_RUNNING) {
+            int sub_row = r - tab->num_lines;
+            InputLayout layout;
+            int cols = tab->max_cols > 0 ? tab->max_cols : 80;
+            compute_input_layout(tab, cols, &layout);
+            if (sub_row >= 0 && sub_row < layout.num_rows) {
+                const char *src = tab->in_search_mode ? tab->search_buf : tab->input;
+                int c_start = layout.chunks[sub_row].start;
+                int c_len = layout.chunks[sub_row].len;
+                if (sub_row == 0) {
+                    snprintf(input_line_buf, sizeof(input_line_buf), "%s%.*s",
+                             layout.pfx, c_len, src + c_start);
+                } else {
+                    snprintf(input_line_buf, sizeof(input_line_buf), "%.*s",
+                             c_len, src + c_start);
+                }
+                line_text = input_line_buf;
+            }
         }
 
         int line_len = (int)strlen(line_text);
@@ -370,7 +547,11 @@ void gui_copy_selection(GUI *gui, Tab *tab) {
     char *text = gui_get_selected_text(gui, tab);
     if (!text || text[0] == '\0') {
         free(text);
-        return;
+        if (gui->primary_text && gui->primary_text[0] != '\0') {
+            text = xstrdup(gui->primary_text);
+        } else {
+            return;
+        }
     }
 
     free(gui->clipboard_text);
@@ -379,13 +560,15 @@ void gui_copy_selection(GUI *gui, Tab *tab) {
     free(gui->primary_text);
     gui->primary_text = xstrdup(text);
 
-    XSetSelectionOwner(gui->dpy, gui->clipboard_atom, gui->win, CurrentTime);
-    XSetSelectionOwner(gui->dpy, XA_PRIMARY, gui->win, CurrentTime);
-    XFlush(gui->dpy);
+    if (gui->dpy) {
+        XSetSelectionOwner(gui->dpy, gui->clipboard_atom, gui->win, CurrentTime);
+        XSetSelectionOwner(gui->dpy, XA_PRIMARY, gui->win, CurrentTime);
+        XFlush(gui->dpy);
+    }
 }
 
 void gui_request_paste(GUI *gui) {
-    if (!gui) return;
+    if (!gui || !gui->dpy) return;
     if (gui->clipboard_text && XGetSelectionOwner(gui->dpy, gui->clipboard_atom) == gui->win) {
         Tab *tab = shell_get_active_tab(gui->shell);
         if (tab && tab->state != SHELL_STATE_RUNNING) {
@@ -409,6 +592,10 @@ void gui_redraw(GUI *gui) {
     Theme *t = &gui->theme;
     int w = gui->width;
     int h = gui->height;
+
+    int term_cols = (w - t->padding_x - 16) / (t->font_width > 0 ? t->font_width : 8);
+    if (term_cols < 20) term_cols = 20;
+    tab->max_cols = term_cols;
 
     /* 1. Clear background */
     fill_rect(gui, 0, 0, w, h, theme_color(t, COLOR_BG));
@@ -540,9 +727,11 @@ void gui_redraw(GUI *gui) {
     if (visible_rows <= 0) visible_rows = 1;
 
     int total_rows = tab->num_lines;
+    InputLayout input_layout;
     bool show_input_row = (tab->state != SHELL_STATE_RUNNING);
     if (show_input_row) {
-        total_rows++;
+        compute_input_layout(tab, term_cols, &input_layout);
+        total_rows += input_layout.num_rows;
     }
 
     int start_row = total_rows - visible_rows - tab->scroll_offset;
@@ -606,57 +795,60 @@ void gui_redraw(GUI *gui) {
                 draw_text_selected(gui, 0, render_y, tl->text, theme_color(t, COLOR_FG_MAIN), sel_c1, sel_c2, has_sel);
             }
         } else if (show_input_row) {
-            int curr_col = 0;
+            int sub_row = r - tab->num_lines;
+            if (sub_row >= 0 && sub_row < input_layout.num_rows) {
+                int curr_col = 0;
+                bool should_draw_cursor = (gui->has_focus &&
+                                           gui->cursor_visible &&
+                                           !gui->sel_active &&
+                                           !gui->sel_dragging &&
+                                           !tab->sel_active &&
+                                           !tab->sel_dragging &&
+                                           tab->state != SHELL_STATE_RUNNING);
+                int caret_w = (t->font_width >= 9) ? 2 : 1;
 
-            bool should_draw_cursor = (gui->has_focus &&
-                                       gui->cursor_visible &&
-                                       !gui->sel_active &&
-                                       !gui->sel_dragging &&
-                                       !tab->sel_active &&
-                                       !tab->sel_dragging &&
-                                       tab->state != SHELL_STATE_RUNNING);
-            int caret_w = (t->font_width >= 9) ? 2 : 1;
+                const char *src_text = tab->in_search_mode ? tab->search_buf : tab->input;
+                int c_start = input_layout.chunks[sub_row].start;
+                int c_len = input_layout.chunks[sub_row].len;
 
-            if (tab->in_search_mode) {
-                const char *search_pfx = "Enter search term: ";
-                int pfx_len = (int)strlen(search_pfx);
-                draw_text_selected(gui, curr_col, render_y, search_pfx, theme_color(t, COLOR_WARM_ORANGE), sel_c1, sel_c2, has_sel);
-                curr_col += pfx_len;
-
-                draw_text_selected(gui, curr_col, render_y, tab->search_buf, theme_color(t, COLOR_FG_MAIN), sel_c1, sel_c2, has_sel);
-
-                if (should_draw_cursor) {
-                    int cursor_x = t->padding_x + (curr_col + tab->search_cursor) * t->font_width;
-                    int cursor_y = render_y - t->font_ascent;
-                    fill_rect(gui, cursor_x, cursor_y, caret_w, t->font_height, theme_color(t, COLOR_CURSOR));
+                char chunk_str[MAX_INPUT_LEN];
+                if (c_len >= (int)sizeof(chunk_str)) c_len = (int)sizeof(chunk_str) - 1;
+                if (c_len > 0) {
+                    memcpy(chunk_str, src_text + c_start, (size_t)c_len);
                 }
-            } else if (tab->state == SHELL_STATE_CONTINUATION) {
-                draw_text_selected(gui, curr_col, render_y, "> ", theme_color(t, COLOR_WARM_ORANGE), sel_c1, sel_c2, has_sel);
-                curr_col += 2;
+                chunk_str[c_len] = '\0';
 
-                draw_text_selected(gui, curr_col, render_y, tab->input, theme_color(t, COLOR_FG_MAIN), sel_c1, sel_c2, has_sel);
+                if (sub_row == 0) {
+                    if (tab->in_search_mode) {
+                        draw_text_selected(gui, curr_col, render_y, "Enter search term: ", theme_color(t, COLOR_WARM_ORANGE), sel_c1, sel_c2, has_sel);
+                        curr_col += 19;
+                    } else if (tab->state == SHELL_STATE_CONTINUATION) {
+                        draw_text_selected(gui, curr_col, render_y, "> ", theme_color(t, COLOR_WARM_ORANGE), sel_c1, sel_c2, has_sel);
+                        curr_col += 2;
+                    } else {
+                        const char *user = getenv("USER");
+                        if (!user || user[0] == '\0') user = "user";
+                        draw_text_selected(gui, curr_col, render_y, user, theme_color(t, COLOR_NEON_PINK), sel_c1, sel_c2, has_sel);
+                        curr_col += (int)strlen(user);
 
-                if (should_draw_cursor) {
-                    int cursor_x = t->padding_x + (curr_col + tab->cursor) * t->font_width;
-                    int cursor_y = render_y - t->font_ascent;
-                    fill_rect(gui, cursor_x, cursor_y, caret_w, t->font_height, theme_color(t, COLOR_CURSOR));
+                        draw_text_selected(gui, curr_col, render_y, "@terminator", theme_color(t, COLOR_PRIMARY_VIOLET), sel_c1, sel_c2, has_sel);
+                        curr_col += 11;
+
+                        draw_text_selected(gui, curr_col, render_y, "> ", theme_color(t, COLOR_ELECTRIC_CYAN), sel_c1, sel_c2, has_sel);
+                        curr_col += 2;
+                    }
+
+                    if (c_len > 0) {
+                        draw_text_selected(gui, curr_col, render_y, chunk_str, theme_color(t, COLOR_FG_MAIN), sel_c1, sel_c2, has_sel);
+                    }
+                } else {
+                    if (c_len > 0) {
+                        draw_text_selected(gui, 0, render_y, chunk_str, theme_color(t, COLOR_FG_MAIN), sel_c1, sel_c2, has_sel);
+                    }
                 }
-            } else {
-                const char *user = getenv("USER");
-                if (!user || user[0] == '\0') user = "user";
-                draw_text_selected(gui, curr_col, render_y, user, theme_color(t, COLOR_NEON_PINK), sel_c1, sel_c2, has_sel);
-                curr_col += (int)strlen(user);
 
-                draw_text_selected(gui, curr_col, render_y, "@terminator", theme_color(t, COLOR_PRIMARY_VIOLET), sel_c1, sel_c2, has_sel);
-                curr_col += 11;
-
-                draw_text_selected(gui, curr_col, render_y, "> ", theme_color(t, COLOR_ELECTRIC_CYAN), sel_c1, sel_c2, has_sel);
-                curr_col += 2;
-
-                draw_text_selected(gui, curr_col, render_y, tab->input, theme_color(t, COLOR_FG_MAIN), sel_c1, sel_c2, has_sel);
-
-                if (should_draw_cursor) {
-                    int cursor_x = t->padding_x + (curr_col + tab->cursor) * t->font_width;
+                if (should_draw_cursor && input_layout.cursor_row == sub_row) {
+                    int cursor_x = t->padding_x + input_layout.cursor_col * t->font_width;
                     int cursor_y = render_y - t->font_ascent;
                     fill_rect(gui, cursor_x, cursor_y, caret_w, t->font_height, theme_color(t, COLOR_CURSOR));
                 }
@@ -686,6 +878,11 @@ void gui_redraw(GUI *gui) {
     gui->needs_redraw = false;
 }
 
+/*
+ * Main interactive GUI event loop.
+ * Multiplexes between X11 socket events and worker return IPC pipes using poll(),
+ * updates blinking cursor timer, and blits back-buffer Pixmap via XCopyArea to prevent tearing.
+ */
 void gui_run_event_loop(GUI *gui) {
     if (!gui || !gui->dpy || !gui->shell) return;
 
@@ -730,6 +927,14 @@ void gui_run_event_loop(GUI *gui) {
                             (unsigned int)gui->width, (unsigned int)gui->height,
                             (unsigned int)DefaultDepth(gui->dpy, gui->screen)
                         );
+
+                        int cols = (gui->width - gui->theme.padding_x - 16) / (gui->theme.font_width > 0 ? gui->theme.font_width : 8);
+                        if (cols < 20) cols = 20;
+                        for (int i = 0; i < gui->shell->num_tabs; i++) {
+                            if (gui->shell->tabs[i]) {
+                                gui->shell->tabs[i]->max_cols = cols;
+                            }
+                        }
 
                         gui->needs_redraw = true;
                     }

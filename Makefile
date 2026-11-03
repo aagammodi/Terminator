@@ -27,7 +27,7 @@ TEST_TASKS67_BIN := tests/test_tasks6_and_7
 TEST_TASKS89_BIN := tests/test_tasks8_and_9
 TEST_TASKS1011_BIN := tests/test_tasks10_and_11
 
-.PHONY: all clean test test-compat
+.PHONY: all clean test test-compat install-desktop
 
 all: $(BIN)
 
@@ -74,6 +74,15 @@ test: $(BIN) $(TEST_TABS_BIN) $(TEST_MODES_BIN) $(TEST_TASKS67_BIN) $(TEST_TASKS
 
 test-compat: $(BIN)
 	@python3 tests/command_compatibility/run_all_audit.py
+
+install-desktop: $(BIN) Terminator.desktop
+	@mkdir -p $(HOME)/Desktop $(HOME)/.local/share/applications 2>/dev/null || true
+	@cp Terminator.desktop $(HOME)/Desktop/ 2>/dev/null || true
+	@cp Terminator.desktop $(HOME)/.local/share/applications/ 2>/dev/null || true
+	@chmod +x $(HOME)/Desktop/Terminator.desktop $(HOME)/.local/share/applications/Terminator.desktop 2>/dev/null || true
+	@gio set $(HOME)/Desktop/Terminator.desktop metadata::trusted true 2>/dev/null || true
+	@update-desktop-database $(HOME)/.local/share/applications 2>/dev/null || true
+	@echo "Terminator desktop launcher created."
 
 clean:
 	rm -rf $(OBJ_DIR) $(BIN) $(TEST_TABS_BIN) $(TEST_MODES_BIN) $(TEST_TASKS67_BIN) $(TEST_TASKS89_BIN) $(TEST_TASKS1011_BIN) *.o *.d tests/*.d

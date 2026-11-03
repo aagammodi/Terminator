@@ -63,6 +63,24 @@ typedef struct {
     int total_rows;
 } ScrollbarGeom;
 
+typedef struct {
+    int start;
+    int len;
+} InputChunk;
+
+#define MAX_INPUT_ROWS 128
+
+typedef struct {
+    int num_rows;
+    int pfx_len;
+    char pfx[64];
+    InputChunk chunks[MAX_INPUT_ROWS];
+    int cursor_row;
+    int cursor_col;
+} InputLayout;
+
+void compute_input_layout(const Tab *tab, int max_cols, InputLayout *layout);
+
 bool gui_get_scrollbar_geom(const GUI *gui, const Tab *tab, ScrollbarGeom *geom);
 GUI *gui_create(Shell *shell, int width, int height);
 void gui_destroy(GUI *gui);

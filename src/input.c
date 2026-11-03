@@ -15,9 +15,18 @@
 #include <stdio.h>
 #include <string.h>
 
+/*
+ * Central X11 keyboard input event router.
+ * Dispatches keypresses to autocomplete selection, foreground signal delivery (Ctrl+C/Ctrl+Z),
+ * history search modal (Ctrl+R), keybinding actions, multiline parser checks, or text entry.
+ */
 void input_handle_key_event(XKeyEvent *event, GUI *gui, Shell *shell, bool *needs_redraw) {
     if (!shell && gui) shell = gui->shell;
     if (!shell || !event) return;
+    if (!event->display) {
+        if (gui && gui->dpy) event->display = gui->dpy;
+        else return;
+    }
     Tab *tab = shell_get_active_tab(shell);
     if (!tab) return;
 
@@ -25,10 +34,6 @@ void input_handle_key_event(XKeyEvent *event, GUI *gui, Shell *shell, bool *need
 
     if (gui) {
         gui_cursor_reset_blink(gui);
-        if (gui->sel_active || tab->sel_active) {
-            gui->sel_active = false;
-            tab->sel_active = false;
-        }
     }
 
     char str[64];
@@ -36,6 +41,26 @@ void input_handle_key_event(XKeyEvent *event, GUI *gui, Shell *shell, bool *need
     int len = XLookupString(event, str, sizeof(str) - 1, &ksym, NULL);
     if (len >= 0) {
         str[len] = '\0';
+    }
+
+    /* Standalone modifier key presses (Shift, Ctrl, Alt, etc.) must not cancel selection */
+    if (IsModifierKey(ksym)) {
+        return;
+    }
+
+    /* Check configured keybindings */
+    KeyAction action = keybind_match(ksym, event->state);
+    if (action == ACTION_COPY) {
+        if (gui) {
+            gui_copy_selection(gui, tab);
+        }
+        return;
+    }
+
+    /* Any active editing, typing, or navigation key clears active selection */
+    if (gui && (gui->sel_active || tab->sel_active)) {
+        gui->sel_active = false;
+        tab->sel_active = false;
     }
 
     bool is_ctrl = (event->state & ControlMask) != 0;
@@ -141,8 +166,7 @@ void input_handle_key_event(XKeyEvent *event, GUI *gui, Shell *shell, bool *need
         return;
     }
 
-    /* Check configured keybindings */
-    KeyAction action = keybind_match(ksym, event->state);
+    /* Dispatch configured keybindings */
     switch (action) {
         case ACTION_NEW_TAB:
             shell_open_tab(shell, NULL);
@@ -538,7 +562,10 @@ void input_handle_button_press(XButtonEvent *event, GUI *gui) {
     if (line_h < 14) line_h = 18;
 
     if (event->y >= term_top && event->y < term_bottom && event->x < gui->width - 16) {
-        int total_rows = tab->num_lines + (tab->state != SHELL_STATE_RUNNING ? 1 : 0);
+        InputLayout layout;
+        int cols = (gui->width - gui->theme.padding_x - 16) / (gui->theme.font_width > 0 ? gui->theme.font_width : 8);
+        compute_input_layout(tab, cols, &layout);
+        int total_rows = tab->num_lines + (tab->state != SHELL_STATE_RUNNING ? layout.num_rows : 0);
         int visible_rows = (term_bottom - term_top) / line_h;
         if (visible_rows <= 0) visible_rows = 1;
         int start_row = total_rows - visible_rows - tab->scroll_offset;
@@ -600,7 +627,11 @@ void input_handle_button_release(XButtonEvent *event, GUI *gui) {
                     int line_h = gui->theme.font_height + 6;
                     if (line_h < 14) line_h = 18;
 
-                    int total_rows = tab->num_lines + 1;
+                    InputLayout layout;
+                    int cols = (gui->width - gui->theme.padding_x - 16) / (gui->theme.font_width > 0 ? gui->theme.font_width : 8);
+                    compute_input_layout(tab, cols, &layout);
+
+                    int total_rows = tab->num_lines + layout.num_rows;
                     int visible_rows = (term_bottom - term_top) / line_h;
                     if (visible_rows <= 0) visible_rows = 1;
                     int start_row = total_rows - visible_rows;
@@ -608,29 +639,19 @@ void input_handle_button_release(XButtonEvent *event, GUI *gui) {
 
                     int vis_r = (event->y - term_top) / line_h;
                     int clicked_r = start_row + vis_r;
+                    int sub_row = clicked_r - tab->num_lines;
 
-                    if (clicked_r == tab->num_lines && event->x >= gui->theme.padding_x) {
-                        int prompt_len = 0;
-                        if (tab->in_search_mode) {
-                            prompt_len = 19;
-                        } else if (tab->state == SHELL_STATE_CONTINUATION) {
-                            prompt_len = 2;
-                        } else {
-                            const char *user = getenv("USER");
-                            if (!user || user[0] == '\0') user = "user";
-                            prompt_len = (int)strlen(user) + 13;
-                        }
-
+                    if (sub_row >= 0 && sub_row < layout.num_rows && event->x >= gui->theme.padding_x) {
                         int clicked_col = (event->x - gui->theme.padding_x + (gui->theme.font_width / 2)) / gui->theme.font_width;
-                        int char_idx = clicked_col - prompt_len;
+                        int char_idx = (sub_row == 0) ? (clicked_col - layout.pfx_len) : clicked_col;
                         if (char_idx < 0) char_idx = 0;
-                        int max_idx = tab->in_search_mode ? (int)strlen(tab->search_buf) : (int)strlen(tab->input);
-                        if (char_idx > max_idx) char_idx = max_idx;
+                        if (char_idx > layout.chunks[sub_row].len) char_idx = layout.chunks[sub_row].len;
 
+                        int final_cur = layout.chunks[sub_row].start + char_idx;
                         if (tab->in_search_mode) {
-                            tab->search_cursor = char_idx;
+                            tab->search_cursor = final_cur;
                         } else {
-                            tab->cursor = char_idx;
+                            tab->cursor = final_cur;
                         }
 
                         gui->sel_active = false;
@@ -680,7 +701,11 @@ void input_handle_motion(XMotionEvent *event, GUI *gui) {
         int line_h = gui->theme.font_height + 6;
         if (line_h < 14) line_h = 18;
 
-        int total_rows = tab->num_lines + (tab->state != SHELL_STATE_RUNNING ? 1 : 0);
+        InputLayout layout;
+        int cols = (gui->width - gui->theme.padding_x - 16) / (gui->theme.font_width > 0 ? gui->theme.font_width : 8);
+        compute_input_layout(tab, cols, &layout);
+
+        int total_rows = tab->num_lines + (tab->state != SHELL_STATE_RUNNING ? layout.num_rows : 0);
         int visible_rows = (term_bottom - term_top) / line_h;
         if (visible_rows <= 0) visible_rows = 1;
         int start_row = total_rows - visible_rows - tab->scroll_offset;

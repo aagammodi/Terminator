@@ -27,6 +27,11 @@ static void worker_sigint_handler(int sig) {
     }
 }
 
+/*
+ * Continuous IPC dispatch loop for tab workers.
+ * Reads framed commands from the GUI thread/process, executes them via executor,
+ * and streams output/prompts/CWD updates back through the return pipe.
+ */
 static void run_worker_loop(Tab *tab, int read_fd, int write_fd, bool is_child_process) {
     IPCHeader hdr;
     while (1) {
@@ -174,6 +179,10 @@ void shell_format_prompt(const Tab *tab, char *out, size_t out_size) {
     snprintf(out, out_size, "%s@terminator> ", user);
 }
 
+/*
+ * Instantiate a new shell tab with isolated CWD and bidirectional IPC pipes.
+ * Dispatches worker execution either via pthread_create() (Mode A) or fork() (Mode B).
+ */
 Tab *shell_open_tab(Shell *shell, const char *initial_dir) {
     if (!shell) return NULL;
     if (shell->num_tabs >= MAX_TABS) {
@@ -181,9 +190,9 @@ Tab *shell_open_tab(Shell *shell, const char *initial_dir) {
         return NULL;
     }
 
+    Tab *active = shell_get_active_tab(shell);
     const char *start_dir = initial_dir;
     if (!start_dir || start_dir[0] == '\0') {
-        Tab *active = shell_get_active_tab(shell);
         if (active) {
             start_dir = active->cwd;
         }
@@ -199,6 +208,9 @@ Tab *shell_open_tab(Shell *shell, const char *initial_dir) {
 
     Tab *tab = terminal_tab_create(next_id, start_dir, shell);
     if (!tab) return NULL;
+    if (active) {
+        tab->max_cols = active->max_cols;
+    }
 
     /* Create bidirectional IPC pipes between GUI and Worker */
     if (pipe(tab->to_worker_pipe) < 0 || pipe(tab->from_worker_pipe) < 0) {

@@ -6,6 +6,10 @@
 #include <unistd.h>
 #include <pwd.h>
 
+/*
+ * Master table of configurable keyboard actions and default X11 KeySym/modifier bindings.
+ * Supports runtime remapping via 'bind <action> <combo>' and persistent ~/.terminatorrc storage.
+ */
 static KeyBindingEntry g_bindings[] = {
     { ACTION_MOVE_LEFT,          "move-left",          "left",              XK_Left,      0,                          0, 0, false },
     { ACTION_MOVE_RIGHT,         "move-right",         "right",             XK_Right,     0,                          0, 0, false },
@@ -55,6 +59,9 @@ const char *keybind_get_config_path(char *buf, size_t len) {
     return buf;
 }
 
+/*
+ * Parse a human-readable key combination string (e.g., "Ctrl+Shift+T") into an X11 KeySym and modifier bitmask.
+ */
 bool keybind_parse_combo(const char *str, KeySym *out_sym, unsigned int *out_mod) {
     if (!str || !out_sym || !out_mod) return false;
 

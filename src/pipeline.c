@@ -56,6 +56,11 @@ static void prepare_command_sudo(Command *cmd) {
     cmd->argv_capacity = new_cap;
 }
 
+/*
+ * Execute a multi-stage command pipeline (cmd1 | cmd2 | ... | cmdN).
+ * Configures N-1 inter-stage pipes, sets up process group pgid, wires STDIN/STDOUT via dup2(),
+ * and routes final output and stderr to the tab capture pipe.
+ */
 int pipeline_execute(Pipeline *pipeline, Tab *tab) {
     if (!pipeline || pipeline->num_commands == 0 || !tab) {
         return -1;
@@ -121,7 +126,10 @@ int pipeline_execute(Pipeline *pipeline, Tab *tab) {
         }
 
         if (pid == 0) {
-            /* Child process i */
+            /*
+             * Establish unified process group for the pipeline so signals (SIGINT/SIGTSTP)
+             * affect all pipeline stages simultaneously via kill(-pgid, ...).
+             */
             if (first_pgid == 0) {
                 setpgid(0, 0);
             } else {
@@ -191,7 +199,10 @@ int pipeline_execute(Pipeline *pipeline, Tab *tab) {
                 _exit(1);
             }
 
-            /* 4. Close all unused descriptors in child */
+            /*
+             * Close all inter-stage pipe ends in child. Failure to close write-ends
+             * causes downstream stages to hang waiting for EOF.
+             */
             for (int j = 0; j < n - 1; j++) {
                 close(pipes[j][0]);
                 close(pipes[j][1]);

@@ -688,6 +688,10 @@ static bool load_script_lines(const char *filepath, LogicalLine **out_lines, int
     return true;
 }
 
+/*
+ * Phase 1 syntax validator: parses entire script into AST without executing statements.
+ * Prevents partial side-effects if syntax errors exist anywhere in the script file.
+ */
 int script_validate_file(const char *filepath, char *err_buf, size_t err_size, int *err_line) {
     if (err_line) *err_line = 1;
     LogicalLine *lines = NULL;
@@ -858,6 +862,11 @@ static void execute_stmt_list(Tab *tab, Stmt **stmts, int count, ScriptVarContex
     }
 }
 
+/*
+ * Execute a shell script file using Terminator's internal two-phase interpreter (Task 11).
+ * Validates syntax first (Phase 1), then builds AST and walks statements (Phase 2),
+ * managing variable scoping for sourced vs subshell execution.
+ */
 int script_execute_file(Tab *tab, const char *filepath, int argc, char **argv,
                         bool is_source, int read_ipc_fd, int write_ipc_fd) {
     if (!tab || !filepath) return 1;

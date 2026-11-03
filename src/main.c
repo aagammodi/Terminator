@@ -185,6 +185,25 @@ static int run_headless_shell(Shell *shell) {
     return tab->last_exit_status;
 }
 
+/*
+ * Detect if stdin is delivering batch commands (pipe or redirected regular file).
+ * Desktop launchers and file managers run GUI applications with stdin redirected
+ * from /dev/null, which must not trigger headless mode.
+ */
+static bool stdin_has_batch_input(void) {
+    if (isatty(STDIN_FILENO)) return false;
+    struct stat st, null_st;
+    if (fstat(STDIN_FILENO, &st) != 0) return false;
+    if (stat("/dev/null", &null_st) == 0 && st.st_rdev == null_st.st_rdev) {
+        return false;
+    }
+    return (S_ISREG(st.st_mode) || S_ISFIFO(st.st_mode) || S_ISSOCK(st.st_mode));
+}
+
+/*
+ * Terminator entry point: parses CLI arguments, initializes Thread or Process mode architecture,
+ * and launches either the X11 graphical interface or the headless shell execution loop.
+ */
 int main(int argc, char **argv) {
     bool force_headless = false;
     bool use_process_mode = false;
@@ -213,7 +232,8 @@ int main(int argc, char **argv) {
     /* Initialize Key Bindings */
     keybind_init();
 
-    if (force_headless || eval_cmd || getenv("DISPLAY") == NULL || !isatty(STDIN_FILENO)) {
+    bool batch_input = stdin_has_batch_input();
+    if (force_headless || eval_cmd || getenv("DISPLAY") == NULL || batch_input) {
         setenv("TERMINATOR_HEADLESS", "1", 1);
     }
 
@@ -275,8 +295,8 @@ int main(int argc, char **argv) {
         return exit_code;
     }
 
-    /* If headless requested or DISPLAY is unset, run headless shell loop */
-    if (force_headless || getenv("DISPLAY") == NULL || !isatty(STDIN_FILENO)) {
+    /* If headless requested, batch script piped in, or DISPLAY is unset, run headless shell loop */
+    if (force_headless || getenv("DISPLAY") == NULL || batch_input) {
         if (getenv("DISPLAY") == NULL && !force_headless) {
             fprintf(stderr, "terminator: note: DISPLAY not set; launching headless shell mode.\n");
         }

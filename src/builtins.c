@@ -31,6 +31,11 @@ bool builtin_is_builtin(const char *name) {
             strcmp(name, "umask") == 0);
 }
 
+/*
+ * Handle 'cd' directory changes.
+ * Maintains per-tab directory isolation: updates tab->cwd and canonicalizes with realpath.
+ * In Process Mode, also invokes chdir() on the tab's dedicated child process.
+ */
 static int builtin_cd(const Command *cmd, Tab *tab) {
     char target[MAX_PATH_LEN];
 
@@ -289,6 +294,10 @@ static int builtin_bind(const Command *cmd, Tab *tab) {
     return 1;
 }
 
+/*
+ * Handle file mode creation mask inspection and modification ('umask').
+ * Supports standard octal (0022), symbolic (-S), and shell-reusable (-p) formats.
+ */
 static int builtin_umask(const Command *cmd, Tab *tab) {
     (void)tab;
     if (cmd->argc <= 1) {
@@ -302,21 +311,11 @@ static int builtin_umask(const Command *cmd, Tab *tab) {
     if (strcmp(cmd->argv[1], "-S") == 0) {
         mode_t cur = umask(0);
         umask(cur);
-        mode_t perms = (~cur) & 0777;
-        char u[4] = "", g[4] = "", o[4] = "";
-        int ui = 0, gi = 0, oi = 0;
-        if (perms & 0400) u[ui++] = 'r';
-        if (perms & 0200) u[ui++] = 'w';
-        if (perms & 0100) u[ui++] = 'x';
-        u[ui] = '\0';
-        if (perms & 0040) g[gi++] = 'r';
-        if (perms & 0020) g[gi++] = 'w';
-        if (perms & 0010) g[gi++] = 'x';
-        g[gi] = '\0';
-        if (perms & 0004) o[oi++] = 'r';
-        if (perms & 0002) o[oi++] = 'w';
-        if (perms & 0001) o[oi++] = 'x';
-        o[oi] = '\0';
+        mode_t p = (~cur) & 0777;
+        char u[4] = {0}, g[4] = {0}, o[4] = {0};
+        snprintf(u, sizeof(u), "%s%s%s", (p & 0400) ? "r" : "", (p & 0200) ? "w" : "", (p & 0100) ? "x" : "");
+        snprintf(g, sizeof(g), "%s%s%s", (p & 0040) ? "r" : "", (p & 0020) ? "w" : "", (p & 0010) ? "x" : "");
+        snprintf(o, sizeof(o), "%s%s%s", (p & 0004) ? "r" : "", (p & 0002) ? "w" : "", (p & 0001) ? "x" : "");
         printf("u=%s,g=%s,o=%s\n", u, g, o);
         fflush(stdout);
         return 0;
@@ -341,6 +340,10 @@ static int builtin_umask(const Command *cmd, Tab *tab) {
     return 0;
 }
 
+/*
+ * Dispatch built-in shell commands directly within the shell process/worker.
+ * Returns 0 on success, >0 on failure, or 127 if the command is not a builtin.
+ */
 int builtin_execute(const Command *cmd, Tab *tab) {
     if (!cmd || cmd->argc == 0 || !cmd->argv[0]) return 0;
 

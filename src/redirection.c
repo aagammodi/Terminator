@@ -5,6 +5,10 @@
 #include <string.h>
 #include <errno.h>
 
+/*
+ * Apply file redirection in forked child process before execvp().
+ * Replaces STDIN_FILENO (<) and/or STDOUT_FILENO (> or >>) via dup2().
+ */
 int redirection_apply_in_child(const Command *cmd) {
     if (!cmd) return 0;
 
@@ -42,6 +46,10 @@ int redirection_apply_in_child(const Command *cmd) {
     return 0;
 }
 
+/*
+ * Apply redirection in the parent shell process for builtins.
+ * Preserves original STDIN/STDOUT descriptors via dup() to allow post-execution restoration.
+ */
 int redirection_apply_in_parent(const Command *cmd, int *saved_stdin, int *saved_stdout) {
     if (!cmd || !saved_stdin || !saved_stdout) return 0;
 
@@ -100,6 +108,9 @@ int redirection_apply_in_parent(const Command *cmd, int *saved_stdin, int *saved
     return 0;
 }
 
+/*
+ * Restore original standard streams using saved descriptors after builtin command completes.
+ */
 void redirection_restore_in_parent(int saved_stdin, int saved_stdout) {
     if (saved_stdin >= 0) {
         dup2(saved_stdin, STDIN_FILENO);

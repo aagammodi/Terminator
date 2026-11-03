@@ -57,6 +57,10 @@ void pipeline_free(Pipeline *p) {
     free(p);
 }
 
+/*
+ * Check whether a command line has unclosed quotes, unclosed substitutions, or trailing escapes.
+ * Used by input processor to display secondary prompt ('> ') for multiline input continuation.
+ */
 bool parser_is_incomplete(const char *cmd_line) {
     if (!cmd_line) return false;
 
@@ -208,6 +212,11 @@ static char *parse_next_word(const char **cursor, bool *has_wildcard) {
     return word;
 }
 
+/*
+ * Parse a raw command line into a structured Pipeline representation.
+ * Performs command substitution $(), variable expansion ($VAR, $?), background '&' detection,
+ * pipeline stage partitioning on unquoted '|', redirection extraction (<, >, >>), and globbing.
+ */
 Pipeline *parser_parse_pipeline(const char *cmd_line, int last_exit_status) {
     if (!cmd_line) return NULL;
 

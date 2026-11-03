@@ -10,6 +10,10 @@
 #include <stdlib.h>
 #include <pwd.h>
 
+/*
+ * Acquire synchronization primitive protecting the shared history buffer.
+ * In Thread Mode: locks pthread_mutex. In Process Mode: waits on process-shared POSIX semaphore.
+ */
 static inline void history_lock(SharedHistory *hist) {
     if (!hist) return;
     if (hist->is_process_mode) {
@@ -22,6 +26,9 @@ static inline void history_lock(SharedHistory *hist) {
     }
 }
 
+/*
+ * Release synchronization primitive protecting the shared history buffer.
+ */
 static inline void history_unlock(SharedHistory *hist) {
     if (!hist) return;
     if (hist->is_process_mode) {
@@ -160,6 +167,11 @@ void history_append_to_file(const char *path, const char *cmd) {
     close(fd);
 }
 
+/*
+ * Allocate and initialize shared history ring buffer.
+ * Thread Mode: Heap allocated structure synchronized via pthread_mutex.
+ * Process Mode: POSIX shared memory (shm_open + mmap MAP_SHARED) synchronized via sem_init(pshared=1).
+ */
 SharedHistory *history_create(bool process_mode) {
     if (process_mode) {
         char name[64];
@@ -221,6 +233,9 @@ SharedHistory *history_create(bool process_mode) {
     }
 }
 
+/*
+ * Tear down shared history resources: destroys sem/mutex and unlinks POSIX SHM.
+ */
 void history_destroy(SharedHistory *hist) {
     if (!hist) return;
 
@@ -243,6 +258,10 @@ void history_destroy(SharedHistory *hist) {
     }
 }
 
+/*
+ * Append command to shared ring buffer across all tabs and persist to ~/.terminator_history.
+ * Filters out immediate consecutive duplicates; shifts older commands when reaching MAX_SHARED_HISTORY.
+ */
 void history_add(SharedHistory *hist, const char *cmd) {
     if (!hist || !cmd || cmd[0] == '\0') return;
 
@@ -303,6 +322,10 @@ void history_print(SharedHistory *hist, FILE *out_fp) {
     fflush(out_fp);
 }
 
+/*
+ * Compute Longest Common Contiguous Substring (LCS) between two strings using dynamic programming.
+ * Space-optimized with two row buffers O(N) rather than full 2D matrix.
+ */
 int longest_common_substring(const char *s1, const char *s2) {
     if (!s1 || !s2) return 0;
     int m = (int)strlen(s1);
@@ -333,6 +356,10 @@ int longest_common_substring(const char *s1, const char *s2) {
     return max_len;
 }
 
+/*
+ * Search history for commands matching query term.
+ * Implements Task 8: Case A (exact match) and Case B (LCS contiguous substring match).
+ */
 int history_search(SharedHistory *hist, const char *term, char results[][MAX_HISTORY_LINE_LEN], int max_results) {
     if (!hist || !term || term[0] == '\0' || max_results <= 0) return 0;
 

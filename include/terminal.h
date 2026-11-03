@@ -68,6 +68,7 @@ typedef struct Tab {
     
     /* View / scrolling */
     int scroll_offset; /* 0 = bottom, >0 = scrolled up into history */
+    int max_cols;      /* Terminal column capacity for word wrapping (0 = unconstrained) */
     
     /* Active execution tracking */
     int out_pipe_fd;

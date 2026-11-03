@@ -1,4 +1,4 @@
-# Terminator — Custom Linux Terminal Emulator & Shell (Phase 1)
+# Terminator — Custom Linux Terminal Emulator & Shell
 
 **Terminator** is an Operating Systems course project (CS69201, Computing Lab, IIT Kharagpur) implementing a custom terminal emulator and command shell from first principles in C using Xlib and standard Linux system calls.
 
@@ -6,7 +6,7 @@ It features a custom-built GUI window, genuine shell lexer and parser, process o
 
 ---
 
-## 1. Implemented Features (Tasks 1–5)
+## 1. Implemented Features (Tasks 1–11)
 
 ### Task 1 — X11 GUI, Multi-Tab Interaction, Thread/Process Modes & Functional Scrollbar
 - **Native Xlib Window**: Built directly with `XOpenDisplay`, `XCreateWindow`, `XMapWindow`, `XSelectInput`, `XNextEvent`, and `XDrawString`. Clean window title set strictly to `"Terminator"` across standard ICCCM and Extended Window Manager Hints (`_NET_WM_NAME`).
@@ -324,7 +324,9 @@ Or execute the test components individually:
 ./tests/test_modes_and_scrollbar     # Task 1: Scrollbar geometry, Mode A threads, Mode B processes, crash isolation
 ./tests/test_tasks6_and_7            # Tasks 6 & 7: multiWatch concurrency, keybindings, selection geometry
 ./tests/test_tasks8_and_9            # Tasks 8 & 9: Job control, process groups, LCS history search engine
+./tests/test_tasks10_and_11          # Tasks 10 & 11: Autocomplete, script validator & AST execution
 python3 tests/test_ui_and_lifecycle.py # Interactive PTY lifecycle, Ctrl+C, Ctrl+Z, jobs, bg, fg in both modes
+python3 tests/command_compatibility/run_all_audit.py # Full 100 Linux command suite audit
 bash tests/test_commands.sh          # Task 2: Built-ins, external commands, $?
 bash tests/test_redirection.sh       # Task 4: <, >, >>, missing files, built-in redirection
 bash tests/test_pipelines.sh         # Task 5: 2, 3, 4, 5-stage pipes, deadlock tests
@@ -428,8 +430,16 @@ sort < input.txt | uniq -c > counts.txt
 
 ---
 
-## 7. Known Limitations & Deferred Features (Tasks 10–11)
+## 7. Known Limitations & Architecture Boundaries
 
-As specified in the course project phase guidelines:
-- **Filename Tab Auto-completion**: Interactive Tab auto-completion across executables, file paths, and directories is deferred to Task 10.
-- **Advanced Bash Script Control Flow**: `if/elif/else/fi` conditional evaluation and test expressions (`[ ... ]`) are deferred to Task 11 (`source <script>` for sequential commands, multiline continuations, and comments is fully functional in Task 2).
+All functional requirements for Tasks 1 through 11 are fully implemented and verified. The following architectural boundaries and design choices reflect standard Unix systems programming practices:
+
+1. **Full-Screen Curses / Raw-Terminal Applications (`nano`, `vi`)**:
+   - Terminator focuses on native terminal emulation and custom shell command execution. Full-screen terminal programs requiring raw terminal termios attributes and cursor addressing (e.g. `vi`, `htop`, `less`) are automatically routed to a dedicated terminal emulator window when a graphical display is available, or report an informative message in headless environments.
+   - Per assignment requirements, `nano` is explicitly guarded and rejected with status 1.
+2. **Terminal Control Sequences**:
+   - Terminator implements ANSI SGR color sequences (`\033[...m`), erase in display (`\033[2J`), erase in line (`\033[K`), and cursor home (`\033[H`). Arbitrary DEC VT100 alternate screen buffers and private escape modes are not required for shell command execution.
+3. **Internal Script Interpreter Grammar**:
+   - The Task 11 script engine natively supports variable assignments (`VAR=val`), variable expansions (`$VAR`, `${VAR}`, `$?`, `$$`), positional parameters (`$0`..`$9`, `$#`), conditionals (`if`, `elif`, `else`, `fi`), test brackets (`[ ... ]`), pipelines, redirections, and comments (`#`). Complex shell grammar features not specified in the assignment (such as `for`/`while` loops, functions, or arithmetic `(( ... ))`) are not implemented.
+4. **Interactive `su` in Headless Mode**:
+   - Interactive password authentication for `su` requires a controlling terminal device; non-interactive `su --help` is fully verified. Root administrative commands requiring privilege elevation (`passwd -l`, `mount -o remount`) succeed when run with superuser credentials.

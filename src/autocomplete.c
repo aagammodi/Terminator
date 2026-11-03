@@ -12,6 +12,10 @@ static int cmp_str(const void *a, const void *b) {
     return strcmp((const char *)a, (const char *)b);
 }
 
+/*
+ * Handle Tab keypress for intelligent filename/command autocompletion.
+ * Performs directory scanning, longest common prefix (LCP) completion, or numbered choice menu.
+ */
 bool autocomplete_handle_tab(Tab *tab) {
     if (!tab || tab->state == SHELL_STATE_RUNNING) return false;
 
@@ -211,6 +215,10 @@ bool autocomplete_handle_tab(Tab *tab) {
     return true;
 }
 
+/*
+ * Resolve user selection (1-9) from an active autocomplete disambiguation menu.
+ * Replaces the partial word in the input buffer and appends trailing '/' for directories.
+ */
 bool autocomplete_handle_choice(Tab *tab, int choice) {
     if (!tab || !tab->completion_active) return false;
     if (choice < 1 || choice > tab->completion_num_matches) return false;

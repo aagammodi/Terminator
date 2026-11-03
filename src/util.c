@@ -1,6 +1,10 @@
 #include "util.h"
 #include <stdarg.h>
 
+/*
+ * Memory allocation wrappers that abort on failure, eliminating NULL-dereference
+ * vulnerabilities throughout the shell architecture.
+ */
 void *xmalloc(size_t size) {
     if (size == 0) return NULL;
     void *ptr = malloc(size);
@@ -44,6 +48,9 @@ char *xstrdup(const char *s) {
     return copy;
 }
 
+/*
+ * Strip trailing newline/carriage return characters from user input lines.
+ */
 void str_trim_trailing_newlines(char *s) {
     if (!s) return;
     size_t len = strlen(s);

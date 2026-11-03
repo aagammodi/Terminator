@@ -35,6 +35,10 @@ void multiwatch_free_args(MultiWatchArgs *args) {
     args->count = 0;
 }
 
+/*
+ * Parse the multiWatch command argument list: multiWatch ["cmd1", "cmd2", ...]
+ * Validates opening/closing brackets, comma delimiters, and string quoting.
+ */
 bool multiwatch_parse_args(const char *arg_str, MultiWatchArgs *args, char *err_msg, size_t err_len) {
     if (!args) return false;
     args->commands = NULL;
@@ -291,6 +295,10 @@ static void emit_output_chunk(Tab *tab, int write_ipc_fd, const char *data, size
     }
 }
 
+/*
+ * Execute multiWatch: concurrently runs multiple commands, multiplexes their output via poll(),
+ * formats updates with timestamp headers, and supports clean Ctrl+C interruption.
+ */
 int multiwatch_run(Tab *tab, const char *raw_cmd, int read_ipc_fd, int write_ipc_fd) {
     MultiWatchArgs args;
     char err_buf[256];

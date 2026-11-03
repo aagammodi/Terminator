@@ -31,6 +31,13 @@
 
 #define ARRAY_SIZE(arr) (sizeof(arr) / sizeof((arr)[0]))
 
+/* Safe integer clamping helper */
+static inline int clamp_int(int val, int min_val, int max_val) {
+    if (val < min_val) return min_val;
+    if (val > max_val) return max_val;
+    return val;
+}
+
 /* Safe string copy that always null-terminates without truncation warnings */
 static inline void safe_strncpy(char *dest, const char *src, size_t n) {
     if (!dest || n == 0) return;

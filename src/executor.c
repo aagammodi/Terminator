@@ -14,6 +14,10 @@
 #include <string.h>
 #include <errno.h>
 
+/*
+ * Wait for all child processes in the current foreground pipeline to terminate.
+ * Updates tab->last_exit_status from the final pipeline stage status code.
+ */
 void executor_reap_children(Tab *tab) {
     if (!tab || tab->num_pipeline_pids == 0) return;
 
@@ -256,6 +260,10 @@ static void command_wrap_external_terminal(Command *cmd, const char *term_bin) {
     cmd->argv_capacity = new_cap;
 }
 
+/*
+ * Execute a command line synchronously within the calling thread/process context.
+ * Used for headless CLI execution (-c flag) and script file statement execution.
+ */
 int executor_run_line(Tab *tab, const char *cmd_line) {
     if (!tab || !cmd_line) return 0;
 
@@ -446,6 +454,11 @@ sync_monitor_job:
     return ret;
 }
 
+/*
+ * Execute a command line within a background worker thread (Mode A) or child process (Mode B).
+ * Streams command output bytes back to GUI thread via write_ipc_fd, drains pipes with poll(),
+ * and transmits IPC_MSG_PROMPT when execution finishes.
+ */
 int executor_run_line_worker(Tab *tab, const char *cmd_line, int read_ipc_fd, int write_ipc_fd) {
     if (!tab || !cmd_line) return 0;
 

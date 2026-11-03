@@ -23,22 +23,14 @@ static const char *neon_aurora_hex[COLOR_COUNT] = {
     [COLOR_BLUE_ACCENT]        = "#60A5FA"
 };
 
+/*
+ * Allocate an X11 color pixel from 8-bit RGB components.
+ * Queries X server colormap; falls back to 24-bit TrueColor packed RGB on headless/failure.
+ */
 static unsigned long allocate_rgb_color(Display *dpy, int screen, int r, int g, int b) {
-    if (r < 0) {
-        r = 0;
-    } else if (r > 255) {
-        r = 255;
-    }
-    if (g < 0) {
-        g = 0;
-    } else if (g > 255) {
-        g = 255;
-    }
-    if (b < 0) {
-        b = 0;
-    } else if (b > 255) {
-        b = 255;
-    }
+    r = clamp_int(r, 0, 255);
+    g = clamp_int(g, 0, 255);
+    b = clamp_int(b, 0, 255);
 
     if (!dpy) return (unsigned long)((r << 16) | (g << 8) | b);
 
@@ -55,6 +47,9 @@ static unsigned long allocate_rgb_color(Display *dpy, int screen, int r, int g, 
     return (unsigned long)((r << 16) | (g << 8) | b);
 }
 
+/*
+ * Parse hex string ("#RRGGBB") and allocate an X11 pixel in the display colormap.
+ */
 static unsigned long allocate_hex_color(Display *dpy, int screen, const char *hex) {
     if (!dpy || !hex || hex[0] != '#' || strlen(hex) < 7) {
         return 0;
@@ -92,6 +87,10 @@ static const char *preferred_fonts[] = {
     "fixed"
 };
 
+/*
+ * Initialize UI color palette, selection gradient table, and monospace font.
+ * Computes font cell geometry (width, height, ascent, descent) used for grid layout.
+ */
 bool theme_init(Display *dpy, int screen, Theme *theme) {
     if (!theme) return false;
 
@@ -169,6 +168,9 @@ bool theme_init(Display *dpy, int screen, Theme *theme) {
     return true;
 }
 
+/*
+ * Release X11 font structures during shell shutdown.
+ */
 void theme_cleanup(Display *dpy, Theme *theme) {
     if (!theme) return;
     if (dpy && theme->font) {
